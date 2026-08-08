@@ -1,0 +1,16 @@
+# Scratch Foundry project used to prove the generated attack suites compile and pass.
+# Recreate with: emit both presets, then `forge install` + `forge test`.
+.forge-verify/
+
+# Agent A's original standalone git history. Their working files were merged up into
+# harness-web/, contract/, fixtures/, LICENSE and README.md; only the nested repo is
+# left behind. Ignored because a nested .git silently breaks `git add` on the parent.
+# Safe to delete once you are happy the merge is complete.
+agent-a-work/
+
+node_modules/
+.next/
+.vercel/
+*.log
+.env
+.env*.local

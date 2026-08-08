@@ -1,0 +1,469 @@
+{
+  "schemaVersion": "harness-attack-snippets/v1",
+  "_readme": [
+    "Consumed by harness-web/src/generator/attacks/assembleAttackTests.ts (Agent A, task A5).",
+    "Owned by Agent B (task B3b). Agent A wrote the two entries below as the \u00a77 fallback",
+    "so A5 was not blocked; overwrite them freely, the assembler does not care.",
+    "",
+    "Keys MUST be finding IDs from contract/types.ts FINDING_IDS. A snippet whose ID is",
+    "not in the generated project's appliedFindingIds is skipped, so it is safe to ship",
+    "snippets for findings that only some option combinations mitigate.",
+    "",
+    "`body` lines are Solidity statements placed inside the test function at one indent.",
+    "`helpers` lines are emitted at contract level (extra helper contracts, constants).",
+    "Placeholders are substituted before emission; any {{UNKNOWN}} left over is a hard",
+    "error rather than a silently broken test.",
+    "",
+    "A finding may have more than one snippet (e.g. one per preset). Key them",
+    "'<FINDING_ID>#<variant>'; everything before the '#' is the finding ID."
+  ],
+  "placeholders": {
+    "{{CONTRACT}}": "the deployed instance under test, e.g. `harness`",
+    "{{CONTRACT_TYPE}}": "the generated contract's type name, e.g. `MyFlashLoanReceiver`",
+    "{{POOL}}": "IPool, resolved from the addresses provider in setUp",
+    "{{ASSET}}": "the underlying ERC20 address constant",
+    "{{ATOKEN}}": "the corresponding aToken address constant",
+    "{{PARAMS}}": "call to `_defaultParams()`, which abi.encodes a valid FlashParams",
+    "{{PARAMS_STRUCT}}": "call to `_defaultFlashParams()`, the same params unencoded",
+    "{{OWNER}}": "the authorised caller created in setUp",
+    "_note": "Snippets may declare `presets`; omitted means both. A snippet is emitted only if its finding ID is in appliedFindingIds AND its preset matches."
+  },
+  "snippets": {
+    "AAVE-FL-001": {
+      "testName": "test_RejectsThirdPartyInitiator",
+      "title": "Flash-loan callback not gated to Pool + initiator",
+      "presets": [
+        "aave-v3-flashloan-receiver"
+      ],
+      "incidents": [
+        {
+          "name": "DODO MarginTrading",
+          "url": "https://github.com/sherlock-audit/2023-01-derby-judging/issues/150",
+          "pocFolder": "2021-03-dodo_flashloan_exp"
+        },
+        {
+          "name": "Mimo SuperVault (Code4rena H-02)",
+          "url": "https://code4rena.com/reports/2022-08-mimo"
+        }
+      ],
+      "comments": [
+        "AAVE-FL-001 \u2014 anyone may call Pool.flashLoanSimple naming OUR contract as the",
+        "receiver. Aave then invokes our callback on their behalf, with their params.",
+        "Checking msg.sender == Pool is NOT enough: the Pool really is the caller.",
+        "This is the bug that drained DODO MarginTrading and Mimo SuperVault."
+      ],
+      "body": [
+        "address attacker = makeAddr(\"attacker\");",
+        "",
+        "vm.prank(attacker);",
+        "vm.expectRevert(abi.encodeWithSignature(\"NotSelfInitiated(address)\", attacker));",
+        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, 1_000e6, {{PARAMS}}, 0);"
+      ]
+    },
+    "AAVE-FL-002": {
+      "testName": "test_RejectsAttackerControlledParams",
+      "title": "Attacker-controlled calldata executed from callback params",
+      "presets": [
+        "aave-v3-flashloan-receiver"
+      ],
+      "incidents": [
+        {
+          "name": "Mimo SuperVault aggregatorSwap(dexTxData)",
+          "url": "https://code4rena.com/reports/2022-08-mimo"
+        }
+      ],
+      "comments": [
+        "AAVE-FL-002 \u2014 the tutorial pattern decodes `params` into (address target,",
+        "bytes data) and calls it, turning finding 001 from a revert into a drain.",
+        "Here `params` decodes to a fixed struct with no call target, so hostile bytes",
+        "cannot become an external call. Asserted even with both other gates satisfied."
+      ],
+      "body": [
+        "// Worst case: the attacker somehow satisfies the caller AND initiator gates.",
+        "vm.prank(address({{POOL}}));",
+        "vm.expectRevert();",
+        "{{CONTRACT}}.executeOperation({{ASSET}}, 1_000e6, 5e5, address({{CONTRACT}}), hex\"deadbeef\");"
+      ]
+    },
+    "AAVE-FL-013": {
+      "testName": "test_IdleFundsCannotRepayAttackerLoan",
+      "title": "Idle funds held on the flash-loan receiver",
+      "presets": [
+        "aave-v3-flashloan-receiver"
+      ],
+      "incidents": [
+        {
+          "name": "Aave docs warn explicitly; ESE 92391",
+          "url": "https://aave.com/docs/developers/smart-contracts/flash-loans"
+        }
+      ],
+      "comments": [
+        "AAVE-FL-013 \u2014 a balance sitting on a receiver is repayment for somebody else's",
+        "flash loan. An attacker borrows, does nothing, and lets YOUR balance cover the",
+        "premium. The initiator gate is what stops it, so assert the balance survives."
+      ],
+      "body": [
+        "uint256 idle = 10_000e6;",
+        "deal({{ASSET}}, address({{CONTRACT}}), idle);",
+        "address attacker = makeAddr(\"attacker\");",
+        "",
+        "vm.prank(attacker);",
+        "vm.expectRevert();",
+        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, 1_000e6, {{PARAMS}}, 0);",
+        "",
+        "assertEq(",
+        "    IERC20({{ASSET}}).balanceOf(address({{CONTRACT}})),",
+        "    idle,",
+        "    \"idle funds were consumed repaying someone else's flash loan\"",
+        ");"
+      ]
+    },
+    "AAVE-SWP-014": {
+      "testName": "test_RejectsZeroMinAmountOut",
+      "title": "Missing minAmountOut on the swap leg",
+      "presets": [
+        "aave-v3-flashloan-receiver"
+      ],
+      "incidents": [
+        {
+          "name": "vuln/defi/slippage \u2014 120 tagged PoCs in the registry",
+          "url": "https://github.com/sanbir/evm-hack-registry"
+        }
+      ],
+      "comments": [
+        "AAVE-SWP-014 \u2014 a swap leg with no floor on output is a free sandwich. The",
+        "contract refuses to proceed rather than trusting the caller to pass one."
+      ],
+      "body": [
+        "address router = makeAddr(\"router\");",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.setRouterAllowed(router, true);",
+        "",
+        "{{CONTRACT_TYPE}}.FlashParams memory p = {{PARAMS_STRUCT}};",
+        "p.router = router;",
+        "p.minAmountOut = 0;",
+        "",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"MissingSlippageBound()\"));",
+        "{{CONTRACT}}.initiateFlashLoan(1_000e6, p);"
+      ]
+    },
+    "AAVE-RISK-010": {
+      "testName": "test_PausedInitiationRevertsCleanly",
+      "title": "Supply/borrow cap and pause reverts unhandled",
+      "presets": [
+        "aave-v3-flashloan-receiver"
+      ],
+      "incidents": [
+        {
+          "name": "Sherlock Index #267",
+          "url": "https://github.com/sherlock-audit/2023-01-index-judging/issues/267"
+        }
+      ],
+      "comments": [
+        "AAVE-RISK-010 \u2014 caps, freezes and pauses make Aave revert mid-flow, and a",
+        "leverage loop that ignores them bricks. Halting must be a clean revert that",
+        "leaves no partial state, and must be reversible."
+      ],
+      "body": [
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.pause();",
+        "",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"EnforcedPause()\"));",
+        "{{CONTRACT}}.initiateFlashLoan(1_000e6, {{PARAMS_STRUCT}});",
+        "",
+        "// No bricked state: unpausing restores normal operation.",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.unpause();",
+        "assertFalse({{CONTRACT}}.paused(), \"contract stuck paused\");"
+      ]
+    },
+    "AAVE-VLT-009": {
+      "testName": "test_SweepIsGatedAndRecoversStrayTokens",
+      "title": "No ERC20 escape hatch for airdrops / stuck tokens",
+      "presets": [
+        "aave-v3-flashloan-receiver"
+      ],
+      "incidents": [
+        {
+          "name": "Morpho integration checklist",
+          "url": "https://docs.morpho.org/overview/resources/audits/"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-009 \u2014 Merkl rewards, airdrops and dust arrive unannounced. Without a",
+        "hatch they are stuck forever; with an ungated one, anyone drains the contract.",
+        "Both halves are asserted here."
+      ],
+      "body": [
+        "uint256 stray = 500e6;",
+        "deal({{ASSET}}, address({{CONTRACT}}), stray);",
+        "address stranger = makeAddr(\"stranger\");",
+        "",
+        "vm.prank(stranger);",
+        "vm.expectRevert();",
+        "{{CONTRACT}}.sweep({{ASSET}}, stranger);",
+        "",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.sweep({{ASSET}}, {{OWNER}});",
+        "assertEq(IERC20({{ASSET}}).balanceOf({{OWNER}}), stray, \"stray tokens not recoverable\");"
+      ]
+    },
+    "AAVE-VLT-003": {
+      "testName": "test_ResistsATokenDonation",
+      "title": "aToken.balanceOf used as share-price denominator",
+      "presets": [
+        "aave-v3-erc4626-vault"
+      ],
+      "incidents": [
+        {
+          "name": "PoolTogether AaveV3YieldSource (Code4rena H-01)",
+          "url": "https://code4rena.com/reports/2022-06-poolTogether"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-003 \u2014 aTokens are ordinary transferable ERC20s, so a donation needs",
+        "no interaction with Aave at all. A vault whose totalAssets() reads the aToken",
+        "balance lets anyone move the share price for the next depositor, for free."
+      ],
+      "body": [
+        "_deposit(alice, 1_000e6);",
+        "uint256 priceBefore = {{CONTRACT}}.convertToAssets(1e6);",
+        "",
+        "// Mint real aTokens, then hand them straight to the vault.",
+        "address whale = makeAddr(\"whale\");",
+        "deal({{ASSET}}, whale, 500_000e6);",
+        "vm.startPrank(whale);",
+        "IERC20({{ASSET}}).approve(address({{POOL}}), 500_000e6);",
+        "{{POOL}}.supply({{ASSET}}, 500_000e6, whale, 0);",
+        "IERC20({{ATOKEN}}).transfer(address({{CONTRACT}}), IERC20({{ATOKEN}}).balanceOf(whale));",
+        "vm.stopPrank();",
+        "",
+        "assertEq({{CONTRACT}}.convertToAssets(1e6), priceBefore, \"share price moved on a free donation\");"
+      ]
+    },
+    "AAVE-VLT-004": {
+      "testName": "test_WithdrawAccountsActualAmount",
+      "title": "Aave withdraw() return value ignored",
+      "presets": [
+        "aave-v3-erc4626-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Connext Amarok (Code4rena M-15)",
+          "url": "https://code4rena.com/reports/2022-06-connext"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-004 \u2014 Aave's withdraw returns the amount ACTUALLY withdrawn, which is",
+        "less than requested when the reserve is illiquid, capped, frozen or paused.",
+        "Crediting the requested amount instead silently mints value out of nothing."
+      ],
+      "body": [
+        "_deposit(alice, 1_000e6);",
+        "uint256 before = IERC20({{ASSET}}).balanceOf(alice);",
+        "",
+        "vm.prank(alice);",
+        "{{CONTRACT}}.withdraw(500e6, alice, alice);",
+        "",
+        "assertEq(IERC20({{ASSET}}).balanceOf(alice) - before, 500e6, \"credited amount != amount Aave returned\");"
+      ]
+    },
+    "AAVE-VLT-011": {
+      "testName": "test_ReceiverOwnerNotConflated",
+      "title": "ERC-4626 receiver and owner conflated",
+      "presets": [
+        "aave-v3-erc4626-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Taichi ERC-4626 series, Pt.5",
+          "url": "https://docs.openzeppelin.com/contracts/5.x/erc4626"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-011 \u2014 redeem(shares, receiver, owner) burns from `owner` and pays",
+        "`receiver`. Mixing the two burns Alice's shares and pays Bob, or worse."
+      ],
+      "body": [
+        "uint256 shares = _deposit(alice, 1_000e6);",
+        "",
+        "// Alice redeems her own shares but directs the assets to Bob.",
+        "vm.prank(alice);",
+        "{{CONTRACT}}.redeem(shares, bob, alice);",
+        "",
+        "assertEq({{CONTRACT}}.balanceOf(alice), 0, \"owner's shares were not burned\");",
+        "assertGt(IERC20({{ASSET}}).balanceOf(bob), 0, \"receiver was not paid\");",
+        "assertEq(IERC20({{ASSET}}).balanceOf(alice), 0, \"assets went to the owner, not the receiver\");"
+      ]
+    },
+    "AAVE-VLT-009#vault": {
+      "testName": "test_SweepCannotTouchPrincipal",
+      "title": "No ERC20 escape hatch for airdrops / stuck tokens",
+      "presets": [
+        "aave-v3-erc4626-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Morpho integration checklist",
+          "url": "https://docs.morpho.org/overview/resources/audits/"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-009 \u2014 a vault needs a hatch for airdrops, but a hatch that can reach",
+        "the principal or its aToken is not a hatch, it is the vulnerability."
+      ],
+      "body": [
+        "_deposit(alice, 1_000e6);",
+        "",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", {{ASSET}}));",
+        "{{CONTRACT}}.sweep({{ASSET}}, {{OWNER}});",
+        "",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", {{ATOKEN}}));",
+        "{{CONTRACT}}.sweep({{ATOKEN}}, {{OWNER}});"
+      ]
+    },
+    "AAVE-VLT-008": {
+      "testName": "test_RewardsAreClaimableAndGated",
+      "title": "RewardsController rewards permanently unclaimable",
+      "presets": [
+        "aave-v3-erc4626-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Float Capital (Code4rena M-05)",
+          "url": "https://code4rena.com/reports/2022-05-backd"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-008 \u2014 Aave base yield is not incentives. Without a claim path the",
+        "emissions are lost; with an ungated one, anyone redirects them."
+      ],
+      "body": [
+        "address[] memory rewardAssets = new address[](1);",
+        "rewardAssets[0] = {{ATOKEN}}; // aTokens, NOT the underlying",
+        "",
+        "vm.prank(alice);",
+        "vm.expectRevert();",
+        "{{CONTRACT}}.claimRewards(rewardAssets, alice);",
+        "",
+        "// Emissions may legitimately be zero at this block. What is asserted is that a",
+        "// claim path exists at all and that only the operator can drive it.",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.claimRewards(rewardAssets, {{OWNER}});"
+      ]
+    },
+    "AAVE-RISK-010#vault": {
+      "testName": "test_PausedDepositRevertsCleanly",
+      "title": "Supply/borrow cap and pause reverts unhandled",
+      "presets": [
+        "aave-v3-erc4626-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Sherlock Index #267",
+          "url": "https://github.com/sherlock-audit/2023-01-index-judging/issues/267"
+        }
+      ],
+      "comments": [
+        "AAVE-RISK-010 \u2014 caps, freezes and pauses make Aave revert mid-flow. Halting",
+        "must be clean and reversible, leaving no partial state behind."
+      ],
+      "body": [
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.pause();",
+        "",
+        "deal({{ASSET}}, alice, 1_000e6);",
+        "vm.startPrank(alice);",
+        "IERC20({{ASSET}}).approve(address({{CONTRACT}}), 1_000e6);",
+        "vm.expectRevert(abi.encodeWithSignature(\"EnforcedPause()\"));",
+        "{{CONTRACT}}.deposit(1_000e6, alice);",
+        "vm.stopPrank();",
+        "",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.unpause();",
+        "assertEq({{CONTRACT}}.totalAssets(), 0, \"paused deposit left partial state\");"
+      ]
+    },
+    "AAVE-RISK-006": {
+      "testName": "test_SurvivesZeroLtvDust",
+      "title": "LTV-0 aToken poison dust can freeze withdrawals",
+      "presets": [
+        "aave-v3-erc4626-vault"
+      ],
+      "incidents": [
+        {
+          "name": "StErMi — Aave v3 LTV-0 bug bounty",
+          "url": "https://immunefi.com/bug-bounty/aave/"
+        },
+        {
+          "name": "ChainSecurity — Grove ALM zero-LTV review",
+          "url": "https://chainsecurity.com/audits/"
+        }
+      ],
+      "comments": [
+        "AAVE-RISK-006 — one wei of a zero-LTV aToken, sent by anyone, must not brick",
+        "redemptions. aTokens are ordinary transferable ERC20s, so this grief costs the",
+        "attacker a single wei and there is no permissionless way to push it back out.",
+        "The aTokens are acquired by genuinely supplying to Aave: aToken balances are",
+        "scaled, so a forged `deal` balance would not behave like a real transfer."
+      ],
+      "body": [
+        "uint256 shares = _deposit(alice, 100_000e6);",
+        "",
+        "address griefer = makeAddr(\"griefer\");",
+        "deal({{ASSET}}, griefer, 1_000e6);",
+        "vm.startPrank(griefer);",
+        "IERC20({{ASSET}}).approve(address({{POOL}}), 1_000e6);",
+        "{{POOL}}.supply({{ASSET}}, 1_000e6, griefer, 0);",
+        "IERC20({{ATOKEN}}).transfer(address({{CONTRACT}}), 1);",
+        "vm.stopPrank();",
+        "",
+        "vm.prank(alice);",
+        "uint256 received = {{CONTRACT}}.redeem(shares / 2, alice, alice);",
+        "assertGt(received, 0, \"1 wei of zero-LTV aToken bricked redemptions\");"
+      ]
+    },
+    "AAVE-RISK-006#receiver": {
+      "testName": "test_SurvivesZeroLtvDust",
+      "title": "LTV-0 aToken poison dust can freeze withdrawals",
+      "presets": [
+        "aave-v3-flashloan-receiver"
+      ],
+      "incidents": [
+        {
+          "name": "StErMi — Aave v3 LTV-0 bug bounty",
+          "url": "https://immunefi.com/bug-bounty/aave/"
+        }
+      ],
+      "comments": [
+        "AAVE-RISK-006 — anyone can push a zero-LTV aToken onto this contract. It must",
+        "stay inert: the callback gates keep holding and the dust cannot be leveraged",
+        "by whoever sent it."
+      ],
+      "body": [
+        "address griefer = makeAddr(\"griefer\");",
+        "deal({{ASSET}}, griefer, 1_000e6);",
+        "vm.startPrank(griefer);",
+        "IERC20({{ASSET}}).approve(address({{POOL}}), 1_000e6);",
+        "{{POOL}}.supply({{ASSET}}, 1_000e6, griefer, 0);",
+        "IERC20({{ATOKEN}}).transfer(address({{CONTRACT}}), 1);",
+        "vm.stopPrank();",
+        "",
+        "// The dust must not become a lever for a third-party flash loan.",
+        "vm.prank(griefer);",
+        "vm.expectRevert();",
+        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, 1_000e6, {{PARAMS}}, 0);",
+        "",
+        "assertEq(",
+        "    IERC20({{ATOKEN}}).balanceOf(address({{CONTRACT}})),",
+        "    1,",
+        "    \"zero-LTV dust changed the contract's Aave position\"",
+        ");"
+      ]
+    }
+  }
+}

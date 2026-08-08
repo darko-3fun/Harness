@@ -1,0 +1,494 @@
+{
+  "_meta": {
+    "version": 1,
+    "owner": "agent-b",
+    "spec": "HARNESS-BUILD-SPEC.md §8.1 — the 15 frozen findings. IDs are frozen (§5.6); never rename.",
+    "taxonomy": "AuditVault vuln/ slugs as catalogued in sanbir/evm-hack-registry (§3.2).",
+    "attribution": [
+      "https://github.com/sanbir/evm-hack-registry",
+      "https://github.com/SunWeb3Sec/DeFiHackLabs",
+      "https://github.com/AuditWare/AuditVault"
+    ],
+    "citationPolicy": "PoC folder links are canonical and runnable. Contest-report links point at the report index for the sponsor; deep links to individual issue numbers are pending verification and are named in `incidents[].name`.",
+    "detectSemantics": {
+      "regex": "TRIGGERED when the pattern MATCHES — the pattern describes the bug.",
+      "absence": "TRIGGERED when the pattern DOES NOT match — the pattern describes the required mitigation."
+    }
+  },
+  "findings": [
+    {
+      "id": "AAVE-FL-001",
+      "title": "Flash-loan callback is not gated to the Pool AND the initiator",
+      "severity": "critical",
+      "vulnClasses": [
+        "vuln/access-control/missing-auth",
+        "vuln/logic/missing-validation"
+      ],
+      "summary": "Anyone can call Pool.flashLoan naming your contract as the receiver, so Aave invokes your callback on the attacker's behalf.",
+      "detail": "Developers treat executeOperation as private because 'only Aave calls it'. Checking msg.sender == Pool is necessary but not sufficient: the Pool will happily call any receiver address a third party names. Without also requiring initiator == address(this), an attacker funds a flash loan, points it at your contract, and your callback runs with their amount, their premium and their params. Every subsequent gate in the contract is then operating on attacker-chosen state.",
+      "incidents": [
+        {
+          "name": "DODO MarginTrading — public flash-loan callback (Sherlock)",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/2021-03-dodo_flashloan_exp",
+          "pocFolder": "2021-03-dodo_flashloan_exp"
+        },
+        {
+          "name": "Mimo SuperVault H-02 — unauthenticated executeOperation (Code4rena)",
+          "url": "https://code4rena.com/reports"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "initiator\\s*[!=]=\\s*address\\(\\s*this\\s*\\)",
+          "appliesTo": ["aave-v3-flashloan-receiver"]
+        },
+        {
+          "kind": "absence",
+          "pattern": "msg\\.sender\\s*[!=]=\\s*address\\(\\s*(POOL|pool|_pool|_POOL)\\s*\\)",
+          "appliesTo": ["aave-v3-flashloan-receiver"]
+        }
+      ],
+      "remediation": "Require all three gates in executeOperation: msg.sender == address(POOL), initiator == address(this), and a contract-owned reentrancy/inflight flag set by your own entrypoint before calling flashLoanSimple."
+    },
+    {
+      "id": "AAVE-FL-002",
+      "title": "Attacker-controlled calldata executed from inside the callback",
+      "severity": "critical",
+      "vulnClasses": [
+        "vuln/dependency/unsafe-external-call",
+        "vuln/access-control/missing-auth"
+      ],
+      "summary": "Decoding a target address and a calldata blob out of `params` and calling it turns a callback bug into a full drain.",
+      "detail": "The common aggregator pattern decodes (address target, bytes data) from params, approves target for the maximum, then does target.call(data). Combined with AAVE-FL-001 the attacker supplies both halves and the contract signs its own approval away. Even with the callback correctly gated, an arbitrary-call sink lets any privileged caller move every token the contract has ever been approved for.",
+      "incidents": [
+        {
+          "name": "Mimo SuperVault aggregatorSwap(dexTxData) — arbitrary external call",
+          "url": "https://code4rena.com/reports"
+        },
+        {
+          "name": "DeFiHackLabs arbitrary-call corpus",
+          "url": "https://github.com/SunWeb3Sec/DeFiHackLabs"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "regex",
+          "pattern": "\\)\\s*\\.\\s*call\\s*(\\{[^}]*\\})?\\s*\\(",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        },
+        {
+          "kind": "regex",
+          "pattern": "approve\\(\\s*\\w+\\s*,\\s*type\\(\\s*uint256\\s*\\)\\.max\\s*\\)",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Never take a call target or calldata from params. Restrict routers to an owner-managed allowlist, restrict the selector, and approve the exact amount for the exact call then reset it to zero."
+    },
+    {
+      "id": "AAVE-VLT-003",
+      "title": "Vault share price has no donation defence (aToken inflation attack)",
+      "severity": "critical",
+      "vulnClasses": [
+        "vuln/oracle/price-manipulation",
+        "vuln/arithmetic/rounding",
+        "vuln/arithmetic/precision-loss"
+      ],
+      "summary": "aTokens are freely transferable, so anyone can inflate the vault's assets by donation without touching the protocol at all.",
+      "detail": "An ERC-4626 wrapper over Aave inherits the classic first-depositor inflation attack, but with a worse attack surface: an aToken donation is a plain ERC20 transfer, requiring no supply, no flash loan, and no interaction with Aave. The attacker mints 1 wei of shares, donates a large aToken balance, and the next depositor's shares round to zero. Reading the aToken balance in totalAssets() is correct and unavoidable — that is how yield accrues — so the defence is a virtual-share offset (or strict internal accounting), not balance detection.",
+      "incidents": [
+        {
+          "name": "PoolTogether AaveV3YieldSource H-01 — donation share inflation (Code4rena)",
+          "url": "https://code4rena.com/reports"
+        },
+        {
+          "name": "ERC-4626 vault share rounding PoC",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/2026-04-ThetanutsVaultShareRounding_exp",
+          "pocFolder": "2026-04-ThetanutsVaultShareRounding_exp"
+        },
+        {
+          "name": "Generic ERC-4626 vault exploit PoC",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/2026-06-Vault4626_exp",
+          "pocFolder": "2026-06-Vault4626_exp"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "(_decimalsOffset|_VIRTUAL_SHARES|virtualShares|_DEAD_SHARES|DEAD_SHARES)",
+          "appliesTo": ["aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Override OpenZeppelin ERC4626's _decimalsOffset() to a non-zero value so virtual shares make the donation unprofitable, or track deposits in internal accounting. Never leave share price derived from a raw balance an outsider can increase with no defence in place."
+    },
+    {
+      "id": "AAVE-VLT-004",
+      "title": "Pool.withdraw return value ignored",
+      "severity": "high",
+      "vulnClasses": [
+        "vuln/dependency/unchecked-return-value",
+        "vuln/logic/state-update"
+      ],
+      "summary": "Aave returns the amount actually withdrawn, which can be less than requested when the reserve is capped, frozen, paused or illiquid.",
+      "detail": "Code that assumes the requested amount was received books phantom assets: it credits the user for tokens the vault never got, and the shortfall is silently socialised across everyone else. Aave's withdraw explicitly returns uint256 for this reason, and type(uint256).max means 'everything', which is almost never the number you assumed.",
+      "incidents": [
+        {
+          "name": "Connext Amarok M-15 — requested vs returned withdraw amount (Code4rena)",
+          "url": "https://code4rena.com/reports"
+        },
+        {
+          "name": "Aave v3 Pool reference",
+          "url": "https://aave.com/docs"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "uint256\\s+\\w+\\s*=\\s*\\w*(POOL|pool)\\w*\\.withdraw\\(",
+          "appliesTo": ["aave-v3-erc4626-vault"]
+        },
+        {
+          "kind": "regex",
+          "pattern": "(^|\\n)\\s*\\w*(POOL|pool)\\w*\\.withdraw\\([^;]*\\)\\s*;",
+          "appliesTo": ["aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Always capture `uint256 actual = POOL.withdraw(...)`, account against `actual`, and revert if it is below the caller's minimum."
+    },
+    {
+      "id": "AAVE-RISK-005",
+      "title": "Aave's risk engine re-implemented more permissively than Aave",
+      "severity": "high",
+      "vulnClasses": [
+        "vuln/logic/missing-check",
+        "vuln/logic/incorrect-state-transition"
+      ],
+      "summary": "Locally re-deriving borrowing capacity ignores eMode, isolation mode, siloed borrowing, debt ceilings and the reserve config bitmap.",
+      "detail": "Integrations frequently compute 'how much can I borrow' from collateral value times LTV. Aave's own accounting is strictly more restrictive: isolation-mode debt ceilings, siloed reserves, eMode category caps and freeze/pause bits all bind first. A wrapper that is more permissive than the protocol it wraps will originate positions that are already unhealthy the moment they land.",
+      "incidents": [
+        {
+          "name": "Spearbit — Morpho-Aave v3 risk-parameter divergence",
+          "url": "https://github.com/spearbit/portfolio"
+        },
+        {
+          "name": "MorphoBlue exploit PoC",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/2024-10-MorphoBlue_exp",
+          "pocFolder": "2024-10-MorphoBlue_exp"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "(getUserAccountData|healthFactor|HEALTH_FACTOR)|^(?![\\s\\S]*\\b(borrow|setUserEMode|setUserUseReserveAsCollateral)\\s*\\()",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Never re-derive capacity. Read Pool.getUserAccountData after the action and revert unless healthFactor stays above your own floor (strictly greater than 1e18). Only applies to contracts that actually borrow."
+    },
+    {
+      "id": "AAVE-RISK-006",
+      "title": "LTV-0 aToken poison dust can freeze withdrawals",
+      "severity": "high",
+      "vulnClasses": [
+        "vuln/dos/frozen-funds",
+        "vuln/logic/missing-check"
+      ],
+      "summary": "One wei of a zero-LTV aToken transferred to your contract can block every subsequent withdrawal.",
+      "detail": "Aave applies a stricter validation path once an account holds any collateral whose LTV has been set to zero: withdrawals and collateral disabling revert while debt exists. Because aTokens are ERC20-transferable, an attacker griefs the integration for the cost of 1 wei plus gas. Two things defuse it: never carrying debt (Aave only runs the LTV check when the account is borrowing), and an escape hatch that can move a foreign aToken back out.",
+      "incidents": [
+        {
+          "name": "StErMi — Aave v3 LTV-0 bug bounty writeup",
+          "url": "https://immunefi.com/bug-bounty/aave/"
+        },
+        {
+          "name": "ChainSecurity — Grove ALM zero-LTV review",
+          "url": "https://chainsecurity.com/audits/"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "(getConfiguration|ReserveConfiguration|getLtv|zeroLtv|LTV_ZERO|ltv\\s*==\\s*0|function\\s+(sweep|rescue|rescueTokens|recoverERC20)\\s*\\()|^(?![\\s\\S]*\\bwithdraw\\s*\\()",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Either keep the position debt-free (Aave only enforces the zero-LTV rule while borrowing) or expose an access-controlled escape hatch that can move a foreign aToken out. Reading the reserve configuration bitmap before withdrawing lets you surface the condition explicitly."
+    },
+    {
+      "id": "AAVE-ORC-007",
+      "title": "eMode price-source divergence",
+      "severity": "high",
+      "vulnClasses": [
+        "vuln/oracle/wrong-feed",
+        "vuln/oracle/single-source"
+      ],
+      "summary": "In eMode Aave may value assets with a category price source, so your quote and Aave's quote disagree.",
+      "detail": "An eMode category can define its own priceSource. When priceSource == address(0) Aave falls back to the per-asset oracle, otherwise the category feed overrides it for every asset in the category. An integration that always calls getAssetPrice(asset) will therefore size borrows against a different price than the one used at liquidation, and the gap is exactly the attacker's margin.",
+      "incidents": [
+        {
+          "name": "Spearbit — eMode price source handling",
+          "url": "https://github.com/spearbit/portfolio"
+        },
+        {
+          "name": "Aave v3 eMode reference",
+          "url": "https://aave.com/docs"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "(getUserEMode|getEModeCategoryData|priceSource)|^(?![\\s\\S]*(getAssetPrice|getPriceOracle|IAaveOracle|IPriceOracle))",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Resolve the user's eMode category, use the category priceSource when it is non-zero, and fall back to the per-asset oracle only when it is address(0)."
+    },
+    {
+      "id": "AAVE-VLT-008",
+      "title": "RewardsController incentives are permanently unclaimable",
+      "severity": "high",
+      "vulnClasses": [
+        "vuln/dos/frozen-funds",
+        "vuln/logic/missing-check"
+      ],
+      "summary": "Aave base yield is not the same thing as incentives; without a claim path the rewards accrue to a contract that can never move them.",
+      "detail": "Base interest accrues through the rebasing aToken balance, but liquidity-mining rewards live in the RewardsController and require an explicit claim. The claim must be passed the aToken addresses, not the underlyings — a very common mistake that silently claims nothing. Rewards accrued to a contract with no claim function are unrecoverable.",
+      "incidents": [
+        {
+          "name": "Float Capital M-05 — unclaimed Aave incentives (Code4rena)",
+          "url": "https://code4rena.com/reports"
+        },
+        {
+          "name": "Alchemix V3 — Immunefi #57812 / #58080 rewards handling",
+          "url": "https://immunefi.com/"
+        },
+        {
+          "name": "Aave rewards unredeemable in a strategy contract (registry PoC)",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/27531-h-41-rewards-compounded-in-aavestrategy-are-unredeemable-cod_exp",
+          "pocFolder": "27531-h-41-rewards-compounded-in-aavestrategy-are-unredeemable-cod_exp"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "(IRewardsController|RewardsController|claimAllRewards|claimRewards)",
+          "appliesTo": ["aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Expose a claim entrypoint that calls the RewardsController with the aToken addresses and routes proceeds to a configured recipient."
+    },
+    {
+      "id": "AAVE-VLT-009",
+      "title": "No ERC20 escape hatch for non-principal tokens",
+      "severity": "medium",
+      "vulnClasses": ["vuln/dos/frozen-funds"],
+      "summary": "Airdrops, Merkl rewards and mistaken transfers land on the contract and are stuck forever.",
+      "detail": "Every long-lived DeFi integration eventually receives a token it was not designed to hold. Without a sweep function those assets are permanently frozen. The sweep must be authorised and must refuse the principal asset and the aToken, otherwise the escape hatch becomes the exploit.",
+      "incidents": [
+        {
+          "name": "Morpho integration checklist — escape hatch requirement",
+          "url": "https://docs.morpho.org/"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "function\\s+(sweep|rescue|rescueTokens|recoverERC20)\\s*\\(",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Add an access-controlled sweep(token, to) that reverts for the underlying asset and its aToken."
+    },
+    {
+      "id": "AAVE-RISK-010",
+      "title": "Supply/borrow caps, pause and freeze cause unhandled reverts",
+      "severity": "medium",
+      "vulnClasses": [
+        "vuln/logic/missing-check",
+        "vuln/dos/frozen-funds"
+      ],
+      "summary": "A reserve that is capped, frozen or paused makes supply/borrow revert, and a leverage loop mid-flight bricks.",
+      "detail": "Aave governance can pin a supply cap to the current utilisation, freeze a reserve, or pause the whole pool. Integrations that assume supply always succeeds will revert in the middle of a multi-step position, leaving collateral posted and debt open. The failure must be detected before the state-changing sequence begins, not discovered halfway through it.",
+      "incidents": [
+        {
+          "name": "Sherlock Index #267 — supply cap causes revert",
+          "url": "https://audits.sherlock.xyz/contests"
+        },
+        {
+          "name": "Aave reserve configuration reference",
+          "url": "https://aave.com/docs"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "(supplyCap|borrowCap|getSupplyCap|isFrozen|isPaused|getReserveData)|^(?![\\s\\S]*\\b(supply|borrow)\\s*\\()",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Pre-flight the reserve configuration for caps, freeze and pause bits, and revert with a named error before any state change."
+    },
+    {
+      "id": "AAVE-VLT-011",
+      "title": "ERC-4626 receiver and owner conflated",
+      "severity": "medium",
+      "vulnClasses": [
+        "vuln/access-control/missing-auth",
+        "vuln/logic/missing-validation"
+      ],
+      "summary": "Burning shares from `receiver` instead of `owner` burns the wrong account's position.",
+      "detail": "ERC-4626 withdraw/redeem take both an owner (whose shares burn) and a receiver (who gets the assets), plus an allowance path when caller != owner. Swapping them burns Alice's shares and pays Bob. The allowance spend must also happen before the burn, or a third party can redeem without approval.",
+      "incidents": [
+        {
+          "name": "Taichi Pt.5 — ERC-4626 receiver/owner confusion",
+          "url": "https://docs.openzeppelin.com/contracts/5.x/erc4626"
+        },
+        {
+          "name": "ERC-4626 vault exploit PoC",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/2026-06-Vault4626_exp",
+          "pocFolder": "2026-06-Vault4626_exp"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "regex",
+          "pattern": "_burn\\(\\s*receiver\\s*,",
+          "appliesTo": ["aave-v3-erc4626-vault"]
+        },
+        {
+          "kind": "regex",
+          "pattern": "_withdraw\\(\\s*_msgSender\\(\\)\\s*,\\s*receiver\\s*,\\s*receiver\\s*,",
+          "appliesTo": ["aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Keep OpenZeppelin's ERC4626 _withdraw(caller, receiver, owner, assets, shares) ordering: spend the allowance against owner, burn from owner, transfer to receiver."
+    },
+    {
+      "id": "AAVE-ORC-012",
+      "title": "Oracle scale / decimals mismatch",
+      "severity": "high",
+      "vulnClasses": [
+        "vuln/arithmetic/decimal-mismatch",
+        "vuln/oracle/wrong-feed"
+      ],
+      "summary": "Aave prices are quoted in the oracle base unit, not in the token's own decimals, so unscaled maths mis-sizes every borrow.",
+      "detail": "AaveOracle returns prices denominated in BASE_CURRENCY_UNIT (1e8 for the USD base currency), while USDC has 6 decimals and WETH has 18. Multiplying a raw balance by a raw price without normalising both sides is off by many orders of magnitude, and the error direction decides whether you under-borrow harmlessly or open an instantly liquidatable position.",
+      "incidents": [
+        {
+          "name": "Morpho liquidation docs — price scaling",
+          "url": "https://docs.morpho.org/"
+        },
+        {
+          "name": "UwuLend oracle pricing exploit PoC",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/2024-06-UwuLend_First_exp",
+          "pocFolder": "2024-06-UwuLend_First_exp"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "(BASE_CURRENCY_UNIT|_scalePrice|10\\s*\\*\\*|\\.decimals\\(\\))|^(?![\\s\\S]*(getAssetPrice|getPriceOracle|IAaveOracle|IPriceOracle))",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Normalise explicitly: value = amount * price * 10**baseDecimals / (10**assetDecimals * BASE_CURRENCY_UNIT), and read decimals() from the token rather than hardcoding it."
+    },
+    {
+      "id": "AAVE-FL-013",
+      "title": "Idle funds held on a flash-loan receiver",
+      "severity": "medium",
+      "vulnClasses": ["vuln/logic/missing-check"],
+      "summary": "If your receiver holds a balance, an attacker's flash loan is repaid out of your money.",
+      "detail": "Aave PULLS amount + premium from the receiver after executeOperation returns. A receiver with an idle balance therefore repays any flash loan that names it, so a third party can borrow, do nothing, and let your treasury pay the premium. Aave's own documentation warns about exactly this. Note that a correct AAVE-FL-001 initiator gate already blocks the third-party path, since the callback rejects loans this contract did not initiate; an explicit balance assertion is defence in depth.",
+      "incidents": [
+        {
+          "name": "Aave v3 FlashLoanReceiverBase — documented warning",
+          "url": "https://aave.com/docs"
+        },
+        {
+          "name": "Aave repay-adapter registry PoC",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/2024-08-AAVE_Repay_Adapter",
+          "pocFolder": "2024-08-AAVE_Repay_Adapter"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "(_assertNoIdleFunds|noIdleFunds|IdleFundsForbidden|balanceBefore|initiator\\s*[!=]=\\s*address\\(\\s*this\\s*\\))",
+          "appliesTo": ["aave-v3-flashloan-receiver"]
+        }
+      ],
+      "remediation": "Sweep to zero at the end of every operation and assert the contract holds no idle balance of the flash-loaned asset outside an in-flight operation."
+    },
+    {
+      "id": "AAVE-SWP-014",
+      "title": "Missing minAmountOut on the swap leg",
+      "severity": "high",
+      "vulnClasses": [
+        "vuln/defi/slippage",
+        "vuln/defi/sandwich"
+      ],
+      "summary": "A swap with a zero minimum-out is a standing invitation to a sandwich bot.",
+      "detail": "Leverage loops and deleverage paths almost always contain a swap. Passing amountOutMinimum: 0 (or computing it on-chain from the same pool being traded against) means the entire trade can be sandwiched for its full value. This is the single most-tagged DeFi class in the registry with 120 instances.",
+      "incidents": [
+        {
+          "name": "vuln/defi/slippage — 120 tagged PoCs in the registry",
+          "url": "https://github.com/sanbir/evm-hack-registry"
+        },
+        {
+          "name": "Aave strategy swapper misconfiguration PoC",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/27529-h-39-aavestrategysol-changing-swapper-breaks-the-contract-co_exp",
+          "pocFolder": "27529-h-39-aavestrategysol-changing-swapper-breaks-the-contract-co_exp"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "regex",
+          "pattern": "(amountOutMinimum|amountOutMin|minAmountOut|minOut)\\s*[:=,]\\s*0\\b",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        },
+        {
+          "kind": "regex",
+          "pattern": "swapExactTokensForTokens\\s*\\(\\s*[^,]+,\\s*0\\s*,",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Take minAmountOut as a caller-supplied parameter derived off-chain, or derive it from the Aave oracle price with an explicit bounded slippage tolerance — never from the pool you are trading against."
+    },
+    {
+      "id": "AAVE-DEP-015",
+      "title": "Unchecked external call / transfer return values",
+      "severity": "medium",
+      "vulnClasses": [
+        "vuln/dependency/unchecked-return-value",
+        "vuln/dependency/unsafe-external-call"
+      ],
+      "summary": "Non-standard ERC20s return false instead of reverting, and a discarded low-level call result hides the failure entirely.",
+      "detail": "USDT and friends do not return a bool from transfer/approve, so a bare call either reverts on decode or silently succeeds depending on the compiler. A low-level .call(...) whose success flag is discarded turns a failed transfer into a successful-looking state update. Both patterns show up 90 times in the registry under vuln/dependency.",
+      "incidents": [
+        {
+          "name": "vuln/dependency/unchecked-return-value — 90 tagged PoCs",
+          "url": "https://github.com/sanbir/evm-hack-registry"
+        },
+        {
+          "name": "Aave portal loan repayment not enforced (registry PoC)",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/25134-h-05-routers-are-not-enforced-to-repay-aave-portal-loan-code_exp",
+          "pocFolder": "25134-h-05-routers-are-not-enforced-to-repay-aave-portal-loan-code_exp"
+        }
+      ],
+      "detect": [
+        {
+          "kind": "absence",
+          "pattern": "SafeERC20",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        },
+        {
+          "kind": "regex",
+          "pattern": "(^|\\n)\\s*[A-Za-z_][\\w.\\[\\]()]*\\.\\s*call\\s*(\\{[^}]*\\})?\\s*\\([^;]*\\)\\s*;",
+          "appliesTo": ["aave-v3-flashloan-receiver", "aave-v3-erc4626-vault"]
+        }
+      ],
+      "remediation": "Use OpenZeppelin SafeERC20 (safeTransfer / forceApprove) for every token movement and check the success flag of every low-level call."
+    }
+  ]
+}

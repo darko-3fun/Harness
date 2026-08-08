@@ -1,0 +1,4 @@
+@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/
+@aave/core-v3/=node_modules/@aave/core-v3/
+@aave/periphery-v3/=node_modules/@aave/periphery-v3/
+forge-std/=lib/forge-std/src/

@@ -1,0 +1,41 @@
+{
+  "name": "harness-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "HARNESS backend: solc compile, Aave audit rule engine, Tenderly deploy + mainnet-fork simulation.",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "vnet:create": "tsx src/scripts/create-vnet.ts",
+    "vnet:seed": "tsx src/scripts/seed-balances.ts",
+    "smoke": "tsx src/scripts/smoke.ts",
+    "compile:check": "tsx src/scripts/compile-check.ts",
+    "route:check": "tsx src/scripts/route-check.ts",
+    "chain:check": "tsx src/scripts/chain-check.ts",
+    "verify:generated": "tsx src/scripts/verify-generated.ts",
+    "fixtures:refresh": "tsx src/scripts/refresh-fixtures.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aave/core-v3": "^1.19.3",
+    "@aave/periphery-v3": "^2.5.2",
+    "@openzeppelin/contracts": "^5.1.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "solc": "^0.8.28",
+    "tsx": "^4.19.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.0",
+    "typescript": "^5.6.0"
+  }
+}
