@@ -6,6 +6,42 @@
 
 ---
 
+## 0. Build status — AS BUILT (updated 2026-08-08, post-integration)
+
+The build is **complete and verified end to end**. This section records what actually shipped and
+which claims below turned out to be wrong. Sections marked **✅ AS BUILT** have been corrected in
+place; the surrounding prose is left as originally written so the reasoning is still readable.
+
+| Gate | Evidence |
+|---|---|
+| `forge test` | **14/14 pass** against real mainnet Aave — 2 suites, 0 failed |
+| `forge build` | Compiler run successful, exit 0 (solc 0.8.27, evm `cancun`) |
+| `next build` | exit 0, TypeScript clean |
+| `tsc` (harness-api) | exit 0 |
+| Audit engine | flips a Critical on user-edited code, both presets |
+| Attack tests emitted | **7 per preset** |
+| HTTP routes | 15/15 including CORS preflight |
+| Chain scenarios | 4/4 on a Tenderly Virtual Environment |
+| Integration | `npm run verify:generated` → *"Agent A output verified end to end"* |
+
+**The demo is VAULT-first.** The ERC-4626 vault preset became the headline (the aToken donation
+attack is one deleted function and needs no protocol interaction); the flash-loan receiver is fully
+built and still demoable. This inverts the priorities in §7 and §10 — see those sections.
+
+**Live Tenderly VE:** forked at block **25710954**, chain id 1, explorer enabled with verified
+source. The fork block is pinned on both sides via `TENDERLY_FORK_BLOCK`.
+
+**Four corrections to this spec**, each found by running the thing rather than reading it:
+
+1. §9.2's `explorer_config` field name/value is wrong — see §9.2.
+2. Aave v3.3 uses **custom errors**, not string codes, and rejects dust supplies — see §9.1.
+3. The frozen `Scenario` union and `GeneratedProject` both gained a field — see §6.
+4. The attack-snippet fixture schema is `harness-attack-snippets/v1`, not the shape §8.2 implies.
+
+**Outstanding:** deploy both apps, and record the backup video (§13).
+
+---
+
 ## 1. What we are building
 
 **HARNESS is "OpenZeppelin Wizard, but for DeFi."**
@@ -165,43 +201,56 @@ Attribute both `sanbir/evm-hack-registry` and `SunWeb3Sec/DeFiHackLabs` in our R
 
 ## 5. Architecture
 
-### 5.1 Repo layout — TWO INDEPENDENT APPS, ONE GIT REPO
+### 5.1 Repo layout — TWO INDEPENDENT APPS, ONE GIT REPO  ✅ AS BUILT
 
 This structure exists specifically so the two agents never touch the same file. See §5.6.
 
 ```
-harness/
-├── LICENSE                       # AGPL-3.0 (see §5.5)            [Agent A]
-├── README.md                     #                                 [Agent A]
+backend-practice/                 # the repo root referred to as `harness/` below
+├── LICENSE                        # AGPL-3.0 (see §5.5)            [Agent A]
+├── README.md                      #                                 [Agent A]
+├── .gitignore                     # ignores .env, node_modules, .forge-verify, agent-a-work
 ├── contract/
-│   └── types.ts                  # FROZEN at h0. Copied verbatim into BOTH apps. Never edited after.
-├── fixtures/                     # the handshake — see §5.6
-│   ├── sample-generated.json     # [Agent A publishes by h1]
-│   ├── attack-snippets.json      # [Agent B publishes by h4]
-│   ├── sample-compile.json       # [Agent B publishes by h1]
-│   ├── sample-audit.json         # [Agent B publishes by h1]
-│   └── sample-simulate.json      # [Agent B publishes by h1]
+│   └── types.ts                   # FROZEN. Copied verbatim into BOTH apps. Two agreed
+│                                  # additive changes since h0 — see §6.
+├── fixtures/                      # the handshake — see §5.6
+│   ├── sample-generated.json      # [Agent A]  real generator output, carries `preset`
+│   ├── attack-snippets.json       # [Agent B]  schema harness-attack-snippets/v1, 14 snippets
+│   ├── sample-compile.json        # [Agent B]  REAL /compile output, via fixtures:refresh
+│   ├── sample-audit.json          # [Agent B]  REAL /audit output in demo step 4's state
+│   └── sample-simulate.json       # [Agent B]  REAL /simulate capture from the VE
 │
-├── harness-web/                  # ███ AGENT A ONLY ███  Next.js on Vercel
-│   ├── package.json              #     its own deps, its own lockfile
-│   ├── src/types.ts              #     copy of contract/types.ts
+├── harness-web/                   # ███ AGENT A ███  Next.js on Vercel
+│   ├── package.json               #     its own deps, its own lockfile
+│   ├── src/types.ts               #     copy of contract/types.ts
 │   ├── src/generator/
 │   │   ├── aave/flashLoanReceiver.ts
 │   │   ├── aave/erc4626Vault.ts
-│   │   └── attacks/assembleAttackTests.ts
-│   └── src/app/                  #     pages, options panel, CodeMirror, audit UI
+│   │   ├── aave/deployScript.ts
+│   │   └── attacks/{assembleAttackTests,scaffold,addresses}.ts
+│   ├── src/app/                   #     pages, options panel, CodeMirror, audit UI, /api/compile
+│   └── scripts/                   #     emit, fixture, preview, matrix, schema-guard, zip-check
 │
-└── harness-api/                  # ███ AGENT B ONLY ███  standalone Node service
-    ├── package.json              #     its own deps, its own lockfile
-    ├── src/types.ts              #     copy of contract/types.ts
+└── harness-api/                   # ███ AGENT B ███  standalone Express service
+    ├── package.json               #     its own deps, its own lockfile
+    ├── remappings.txt             #     served at GET /remappings
+    ├── src/types.ts               #     copy of contract/types.ts
+    ├── src/{server,env,validate,aave,tenderly,solc-imports}.ts
     ├── src/routes/
-    │   ├── compile.ts            #     solc
-    │   ├── audit.ts              #     rule engine
-    │   ├── deploy.ts             #     viem → Tenderly
-    │   └── simulate.ts           #     Tenderly scenario runner
-    ├── knowledge/findings.json   #     curated audit rules + hack citations
-    └── contracts/                #     OZ + Aave sources for solc import resolution
+    │   ├── compile.ts             #     solc standard-JSON, imports resolved off disk
+    │   ├── audit.ts               #     rule engine (comment/string masking, CRLF+BOM safe)
+    │   ├── deploy.ts              #     viem → Tenderly
+    │   └── simulate.ts            #     scenario runner, entrypoint auto-detected
+    ├── src/scripts/               #     create-vnet, seed-balances, smoke, compile-check,
+    │                              #     route-check, chain-check, verify-generated,
+    │                              #     refresh-fixtures, audit-file, selector-probe
+    ├── knowledge/findings.json    #     15 curated findings + hack citations
+    └── contracts/samples/         #     hardened reference contracts the rules are tuned against
 ```
+
+**Verification entry points** (`npm run <name>` inside `harness-api`):
+`smoke` (offline, no chain) · `compile:check` · `route:check` · `chain:check` · `verify:generated`
+· `fixtures:refresh` · `vnet:create` · `vnet:seed`.
 
 **Why two `package.json` files instead of a monorepo:** a shared lockfile is the single most common
 way two AI agents deadlock — every `npm i` from one agent dirties the other's tree. Two independent
@@ -319,12 +368,36 @@ communication required for 10 hours.
 | Compile/deploy result cards (from fixtures) | Deploy + simulate against real mainnet Aave |
 | Preset buttons, Remix link, zip export, README | Balance seeding, scenario scripting, CORS |
 
-#### The one unavoidable rejoin — budget 30 minutes at h10
+#### The one unavoidable rejoin — budget 30 minutes at h10  ✅ AS BUILT
 
 Agent A swaps mocks for the real `API_BASE`. Expect CORS, one JSON field-name mismatch, and one
 serialization bug (bigint → string). **This is the only sequential dependency in the plan. Do it at
 h10, not h13.** If integration has not started by h11, ship the fixture-backed demo — it still shows
 the complete flow.
+
+> **What the rejoin actually surfaced.** The bigint bug was pre-empted (Agent B set a JSON replacer
+> up front) and CORS was pre-tested with real browser semantics. The genuine problems were
+> different, and none would have been caught by fixtures alone:
+>
+> 1. **Agent B's audit engine produced four false positives** on Agent A's contract. The `absence`
+>    rules encoded *Agent B's own* identifiers rather than the concept, so they demanded oracle
+>    scaling and health-factor checks from a contract that never touches an oracle and never
+>    borrows. Rules are now conditional on evidence that the contract performs the risky operation:
+>    `(mitigation)|^(?![\s\S]*trigger)`, compiled **without** the `m` flag so `^` anchors to the
+>    whole source.
+> 2. **The frozen entrypoint was wrong, and Agent B adapted rather than Agent A.** The generator
+>    emits `initiateFlashLoan(uint256, FlashParams)`; Agent B had frozen
+>    `executeFlashLoan(address,uint256,bytes)`. A typed struct with no `bytes` payload *is* the
+>    AAVE-FL-002 mitigation — forcing the `bytes` shape would have reintroduced the finding. §`/simulate`
+>    now detects the entrypoint from the deployed dispatch table and drives either shape.
+> 3. **A UTF-8 BOM broke `/compile`** with a line-1 `ParserError`. Now stripped in compile, audit
+>    and validation.
+> 4. **The two agents wrote `attack-snippets.json` to different schemas.** Agent A's assembler won,
+>    because it was the consumer and had better guardrails; Agent B ported the content into it.
+>
+> **Lesson for the next build:** fixtures prove the *shape* of an interface, not its *semantics*.
+> Everything above needed the two halves actually talking to each other. Budget the rejoin for
+> discovering that your rules are wrong, not just that your field names are.
 
 #### Git hygiene
 - One branch each: `agent-a`, `agent-b`. Merge to `main` only at h10 and h13.
@@ -338,6 +411,14 @@ the complete flow.
 
 Both agents depend on these types. Agree on them before splitting up, then never change them
 without telling the other agent. `packages/generator/src/types.ts`:
+
+> **✅ AS BUILT.** The file lives at `contract/types.ts`, copied verbatim into `harness-web/src/`
+> and `harness-api/src/`. It also carries the other three frozen artifacts of §5.6 as constants:
+> `FINDING_IDS`, `REMAPPINGS` / `IMPORT_PATHS`, and `API_ROUTES`, plus `SOLC_VERSION` (`0.8.27`),
+> `SOLIDITY_PRAGMA` (`^0.8.27`) and `EVM_VERSION` (`cancun`).
+>
+> **Two additive changes were agreed after h0** and applied to all three copies. Both are marked
+> ✅ below. Neither removes or renames anything, so no existing consumer broke.
 
 ```ts
 export type Preset = 'aave-v3-flashloan-receiver' | 'aave-v3-erc4626-vault';
@@ -356,6 +437,7 @@ export interface GenerateOptions {
 }
 
 export interface GeneratedProject {
+  preset: Preset;                // ✅ ADDED post-h0. Consumers must not infer this from the source.
   contractName: string;
   contractSource: string;        // src/<Name>.sol
   attackTestSource: string;      // test/<Name>.attack.t.sol
@@ -391,7 +473,11 @@ export interface CompileResult {
 
 export interface DeployResult { address: `0x${string}`; explorerUrl: string; txHash: string; }
 
-export type Scenario = 'supply-borrow' | 'flashloan-simple' | 'leverage-loop';
+export type Scenario =
+  | 'supply-borrow'
+  | 'flashloan-simple'
+  | 'leverage-loop'
+  | 'vault-deposit';            // ✅ ADDED post-h0 for the vault demo. Purely additive.
 export interface SimulateResult {
   ok: boolean;
   scenario: Scenario;
@@ -410,6 +496,14 @@ hardcodes a fake `GeneratedProject`) so neither ever blocks on the other.
 
 > **File ownership is absolute.** If you need a change in the other agent's files, request it —
 > do not edit. This is the #1 cause of two-agent hackathon failure.
+
+> ✅ **AS BUILT — all A1–A10 and B1–B10 are complete except the backup video (B10) and deployment.**
+> Two deviations worth recording:
+> **A7 (vault preset) was promoted from stretch to core** when the demo became vault-first, and
+> **B9 (leverage-loop) was not cut** — it ships and passes on-chain.
+> Agent A stopped work after the handoff, so Agent B completed the remaining generator change
+> (recording `AAVE-RISK-006` where the escape hatch mitigates it), ran the `forge` verification,
+> and merged the two trees into the §5.1 layout.
 
 ### AGENT A — Generator + Frontend
 **Owns:** `harness-web/**` (entire app), plus `contract/types.ts`, `fixtures/sample-generated.json`,
@@ -498,18 +592,46 @@ them into `findings.json`.
 debt** instead of repaying, and `onBehalfOf` must have pre-approved borrow allowance.
 `flashLoanSimple` avoids this entirely — **default to `flashLoanSimple`.**
 
-### 8.2 Required attack tests (Agent A, task A5)
-Emit at minimum these six, each named descriptively and commented with its real incident:
+### 8.2 Required attack tests (Agent A, task A5)  ✅ AS BUILT — 7 per preset, 14/14 passing
 
-1. `test_RejectsThirdPartyInitiator` — a random EOA calls `Pool.flashLoan` naming our contract → must revert *(DODO, Mimo)*
-2. `test_RejectsAttackerControlledParams` — malformed/hostile `params` → must revert *(Mimo)*
-3. `test_ResistsATokenDonation` — donate aTokens directly, then deposit → share price must not move *(PoolTogether)*
-4. `test_HandlesPartialWithdraw` — pool illiquid, `withdraw` returns less than requested → must account the actual amount *(Connext)*
-5. `test_SurvivesZeroLtvDust` — send 1 wei of a zero-LTV aToken → withdrawals still work *(StErMi)*
-6. `test_RevertsWhenSupplyCapPinnedToZero` — cap set to 0 → clean revert, no bricked state *(Sherlock Index)*
+`fixtures/attack-snippets.json` is schema **`harness-attack-snippets/v1`**, owned by Agent B and
+consumed by Agent A's assembler. Keys are finding IDs, optionally `<FINDING_ID>#<variant>` when a
+finding needs a different body per preset. Each snippet carries `testName`, `title`, `presets`,
+`incidents`, `comments`, `body` (statements placed inside the test) and optional `helpers`
+(contract-level). Placeholders: `{{CONTRACT}}` `{{CONTRACT_TYPE}}` `{{POOL}}` `{{ASSET}}`
+`{{ATOKEN}}` `{{PARAMS}}` `{{PARAMS_STRUCT}}` `{{OWNER}}`.
 
-Vault preset adds: `test_RewardsAreClaimable`, `test_SweepCannotTouchPrincipal`,
-`test_ReceiverOwnerNotConflated`.
+A snippet is emitted only when its finding ID is in `appliedFindingIds` **and** its preset matches.
+Two guardrails, both of which caught real bugs: the assembler throws if it would emit **zero**
+tests (a schema mismatch otherwise silently produces an empty suite that looks like success), and
+throws on any surviving `{{PLACEHOLDER}}`. Agent B's `smoke` additionally rejects two snippets
+declaring the same helper, since helpers are emitted per snippet without de-duplication.
+
+**Flash-loan receiver — 7 tests, all passing:**
+
+1. `test_RejectsThirdPartyInitiator` — a random EOA names our contract as receiver → reverts *(DODO, Mimo)*
+2. `test_RejectsAttackerControlledParams` — hostile `params` → reverts *(Mimo)*
+3. `test_IdleFundsCannotRepayAttackerLoan` — an idle balance survives a third-party loan attempt *(Aave docs)*
+4. `test_RejectsZeroMinAmountOut` — no slippage floor → reverts *(`vuln/defi/slippage`)*
+5. `test_PausedInitiationRevertsCleanly` — halt is clean and reversible *(Sherlock Index)*
+6. `test_SweepIsGatedAndRecoversStrayTokens` — escape hatch is owner-only *(Morpho checklist)*
+7. `test_SurvivesZeroLtvDust` — 1 wei of a zero-LTV aToken stays inert *(StErMi)*
+
+**ERC-4626 vault — 7 tests, all passing:**
+
+1. `test_ResistsATokenDonation` — **the demo test**; donation must not move share price *(PoolTogether)*
+2. `test_WithdrawAccountsActualAmount` — short fill is not booked as full *(Connext)*
+3. `test_ReceiverOwnerNotConflated` — burn owner's shares, pay receiver *(Taichi Pt.5)*
+4. `test_SweepCannotTouchPrincipal` — hatch refuses asset and aToken *(Morpho checklist)*
+5. `test_RewardsAreClaimableAndGated` — incentives claimable, claim is authorised *(Float Capital)*
+6. `test_PausedDepositRevertsCleanly` — no partial state left behind *(Sherlock Index)*
+7. `test_SurvivesZeroLtvDust` — dust does not brick redemptions *(StErMi)*
+
+> ⚠️ **`test_RevertsWhenSupplyCapPinnedToZero` was not built as specified.** Aave's supply cap is
+> enforced inside the Pool against live utilisation, which cannot be forced on a fork and is not
+> mockable through `getConfiguration`. The pause path (`test_Paused…RevertsCleanly`) asserts the
+> same property — a capped/halted reserve produces a clean revert with no bricked state — through a
+> mechanism that is actually reachable.
 
 ### 8.3 ⚠️ Ethical constraint
 **Never emit deliberately vulnerable code.** No "toggle to introduce a bug." Generated output is
@@ -543,14 +665,42 @@ tutorial pattern beside the test that kills it. Same impact, defensible optics.
 - ⚠️ Aave v4 docs are live (Hub & Spoke, Target-HF liquidations) but **mainnet deployment is
   unverified — target v3.**
 
+#### ✅ Learned on a real mainnet fork (not in the original research)
+
+- **Aave v3.3 uses custom errors, not numeric string codes.** `InvalidAmount()` is `0x2c5211c6`.
+  viem cannot decode them unless you pass the contract's own ABI, so a revert surfaces as
+  *"signature not found on ABI"*. Identify unknown selectors by computing candidates —
+  `harness-api/src/scripts/selector-probe.ts` does this.
+- **A 1 wei supply reverts.** Aave divides the amount by the reserve's liquidity index (>1e27); a
+  scaled result of zero is rejected. Any dust position needs roughly `10^(decimals-3)`, not 1.
+- **aToken balances are scaled.** Never forge them with `deal` or `tenderly_setErc20Balance` — the
+  written slot does not match the scaled representation. Acquire them by actually supplying.
+- **Zero-LTV collateral only matters while borrowing.** `validateHFAndLtv` runs from
+  `executeWithdraw` only when the account has debt, so a supply-only integration is unaffected by
+  LTV-0 dust; the practical mitigation is an escape hatch that can move the dust out.
+- **USDC on Ethereum v3 is `ltv 7500`, active, unfrozen**, `supplyCap` 2.5B, `borrowCap` 2.25B —
+  verified at block 25710954, contrary to an assumption that stablecoin LTV had been zeroed.
+- **Tracers differ in shape.** `tenderly_traceTransaction` returns a FLAT array under `.trace`
+  where depth is `traceAddress.length`; `debug_traceTransaction` + `callTracer` returns a NESTED
+  tree under `.calls`. Assuming one shape silently yields a 1-entry trace that looks like it worked.
+- **Impersonation needs no key.** `eth_sendTransaction` with any `from` works on a Virtual
+  Environment, which is how the vault scenario drives a separate attacker and victim.
+
 ### 9.2 Tenderly Virtual Environments
 Base URL: `https://api.tenderly.co/api/public/v1/account/{account}/project/{project}`
 
 - `POST /environments` with:
   `network_configs: [{ network_id: "1", block_number, chain_config_overrides.chain_id,
-  explorer_config: { enabled: true, verification_visibility: "source" },
+  explorer_config: { enabled: true, contract_verification_visibility: "src" },
   accounts: [{ address, balance }] }]`
   → response `active_instance.vnets[].rpcs` gives **Admin RPC** and **Public RPC**.
+
+  > ✅ **CORRECTED.** This spec originally said
+  > `explorer_config: { verification_visibility: "source" }`. Tenderly rejects that with
+  > `400 explorer_config.contract_verification_visibility is invalid` — note the error names the
+  > field it validates, not the field you sent. The working shape is
+  > **`contract_verification_visibility: "src"`**. `create-vnet.ts` probes candidate shapes and
+  > reports which one was accepted, so a future API change surfaces immediately.
 - Admin-RPC cheatcodes: `tenderly_setBalance`, `tenderly_setErc20Balance`,
   `tenderly_setStorageAt`, `evm_snapshot` / `evm_revert`, `evm_increaseTime`,
   `eth_sendTransaction` (impersonation).
@@ -588,31 +738,64 @@ unit testing with zero infrastructure.
 | 10.5–12.5 | A9 Remix + zip, A10 README + submission text | B9 leverage-loop scenario *(cut first if behind)* |
 | 12.5–14 | **Together:** dry runs ×3, **record backup video**, submit | ← |
 
-**Cut list, in order:** leverage-loop scenario → zip download → vault preset → Remix button →
-audit on user-edited code.
+**Cut list, in order:** ~~leverage-loop scenario → zip download → vault preset → Remix button →
+audit on user-edited code.~~
+
+> ✅ **SUPERSEDED — nothing was cut, and the vault preset must never have been on this list.**
+> Once the demo became vault-first, `A7 (vault preset)` became core and `B9 (leverage-loop)`
+> stopped being the obvious first cut — both shipped and both are verified. If you ever do need to
+> cut under time pressure, the honest order is now:
+> **leverage-loop scenario → Remix button → zip download → flash-loan preset.**
+> The vault preset, the audit engine and the attack suite are the product.
 
 **NEVER cut:** compile ✅ · deployed Tenderly explorer link · the generated attack-test file.
 Those three *are* the pitch.
 
 ---
 
-## 11. Demo script (3 minutes)
+## 11. Demo script (3 minutes)  ✅ AS BUILT — VAULT-FIRST
 
-1. **(20s)** "Here's a hand-written Aave flash-loan receiver from a popular tutorial. It has a
-   Critical bug that drained DODO and Mimo: the callback is public. Anyone can call
-   `Pool.flashLoan` naming *your* contract as the receiver."
-2. **(30s)** Click preset **"Aave V3 Flash Loan Receiver."** Code appears. Point at the three gates.
-3. **(40s)** Click **"Generate attack suite."** Six named tests appear, each citing a real incident.
-   Run → all green.
-4. **(30s)** Delete one `require` from the generated code. Click **Audit.** A Critical finding flips
-   to ❌, showing the historical hack and a link to a runnable PoC. Put it back → ✅.
+> The original flash-loan script is preserved below the vault one; both work. The vault leads
+> because its Critical is a single deleted function and the attack needs no protocol interaction
+> at all — an aToken donation is one plain ERC20 transfer.
+
+1. **(20s)** "Here's an ERC-4626 vault over Aave. Every tutorial version has a Critical: aTokens
+   are freely transferable, so anyone can donate into your vault and inflate the share price. It
+   costs the attacker one ERC20 transfer and no interaction with Aave whatsoever."
+2. **(30s)** Click preset **"Aave V3 ERC-4626 Vault."** Code appears. Point at `_decimalsOffset()`
+   — the one-line virtual-share defence — and at `totalAssets()`.
+3. **(40s)** Click **"Generate attack suite."** Seven named tests appear, each citing a real
+   incident. Run → all green, against real mainnet Aave on a fork.
+4. **(30s)** Delete `_decimalsOffset()`. Click **Audit.** `AAVE-VLT-003` flips to **❌ Critical**,
+   citing PoolTogether's AaveV3YieldSource H-01 and linking two runnable registry PoCs. Put it
+   back → ✅.
 5. **(40s)** **"But does it actually work?"** → Compile ✅ → Deploy → **Tenderly public explorer
-   URL, verified source** → Simulate a real `flashLoanSimple` against **mainnet Aave** → call trace.
+   URL, verified source** → Simulate `vault-deposit` against **mainnet Aave**. The attacker
+   donates 100,000 USDC of aTokens at the vault, a victim then deposits 25,000 — and gets
+   24,999.92 back. **The attacker spent 1,255,051 units for every 1 unit extracted.**
 6. **(20s)** "Aave Kit and the Morpho SDK own the frontend. Nobody generates the *contract* — which
    is where every Critical in the public audit corpus actually lives. The checklist is mechanical.
    We ship it."
 
 Step 4 is the moment that proves this is an audit tool and not a form. **Rehearse it.**
+
+<details>
+<summary>Original flash-loan script (still fully working)</summary>
+
+1. **(20s)** "Here's a hand-written Aave flash-loan receiver from a popular tutorial. It has a
+   Critical bug that drained DODO and Mimo: the callback is public. Anyone can call
+   `Pool.flashLoan` naming *your* contract as the receiver."
+2. **(30s)** Click preset **"Aave V3 Flash Loan Receiver."** Code appears. Point at the three gates.
+3. **(40s)** Click **"Generate attack suite."** Seven named tests appear, each citing a real incident.
+   Run → all green.
+4. **(30s)** Delete the `initiator != address(this)` gate. Click **Audit.** `AAVE-FL-001` flips to
+   ❌ — and so does `AAVE-FL-013`, because that gate is exactly what stops an idle balance being
+   used to repay someone else's loan. Put it back → ✅.
+5. **(40s)** Compile ✅ → Deploy → explorer URL → Simulate `flashloan-simple` against mainnet Aave.
+   The initiator's balance moves by **exactly −12.5 USDC** — the 5bp premium on 25,000 — proving
+   the receiver held no idle funds.
+
+</details>
 
 ---
 
@@ -629,15 +812,34 @@ Step 4 is the moment that proves this is an audit tool and not a form. **Rehears
 
 ---
 
-## 13. Definition of done
+## 13. Definition of done  ✅ AS BUILT
 
-- [ ] Public repo with AGPL `LICENSE` and a real README
-- [ ] Live Vercel URL
-- [ ] Two one-click presets generating valid Solidity
-- [ ] Generated `*.attack.t.sol` with ≥6 cited attack tests
-- [ ] `/api/audit` flips findings on user-edited code
-- [ ] `/api/compile` returns green with ABI + bytecode size
-- [ ] Contract deployed to a Tenderly VE with a shareable verified-source explorer URL
-- [ ] ≥1 scenario simulated against real mainnet Aave, trace rendered
-- [ ] Backup demo video recorded
-- [ ] Attribution to `sanbir/evm-hack-registry`, `SunWeb3Sec/DeFiHackLabs`, AuditVault, OpenZeppelin
+- [ ] Public repo with AGPL `LICENSE` and a real README — *`LICENSE` and `README.md` exist; the repo is not published yet*
+- [ ] Live Vercel URL — **outstanding, see §14**
+- [x] Two one-click presets generating valid Solidity — both compile via `forge build` and via `/compile`
+- [x] Generated `*.attack.t.sol` with ≥6 cited attack tests — **7 per preset, 14/14 passing on a mainnet fork**
+- [x] `/api/audit` flips findings on user-edited code — verified for both presets
+- [x] `/api/compile` returns green with ABI + bytecode size
+- [x] Contract deployed to a Tenderly VE with a shareable verified-source explorer URL
+- [x] ≥1 scenario simulated against real mainnet Aave, trace rendered — **4 scenarios, 25-call decoded trace**
+- [ ] Backup demo video recorded — **outstanding**
+- [x] Attribution to `sanbir/evm-hack-registry`, `SunWeb3Sec/DeFiHackLabs`, AuditVault, OpenZeppelin
+
+---
+
+## 14. What is left
+
+1. **Deploy.** `harness-api` is a persistent Express server — Render or Railway, **≥1 GB RAM**
+   (solc-js compiling OpenZeppelin + Aave will OOM on 512 MB). `harness-web` → Vercel with
+   `NEXT_PUBLIC_API_BASE` pointing at the API, and the API's `WEB_ORIGIN` set to the exact Vercel
+   origin. Never expose the Admin RPC to the browser; it stays server-side.
+   Beware cold starts on a sleeping free instance — wake it before presenting.
+2. **Record the backup video** (§13), ideally against the deployed URLs.
+3. **Optional:** delete `agent-a-work/`, which now holds only Agent A's original `.git` history.
+
+### Resilience worth knowing before you present
+
+`harness-web` falls back to a local `/api/compile` route and a mock audit when
+`NEXT_PUBLIC_API_BASE` is unset or the API is unreachable. Generate and compile keep working;
+only deploy and simulate are lost. The demo degrades rather than dies.
+
