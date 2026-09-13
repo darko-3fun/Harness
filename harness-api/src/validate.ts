@@ -1,7 +1,7 @@
 // Spec §5.4 (CVE-2026-48054): every user-controlled value is strictly validated and REJECTED,
 // never sanitized.
 
-import type { Preset, Scenario } from './types.js';
+import { PRESET_LIST, type Preset, type Scenario } from './types.js';
 
 export class ValidationError extends Error {}
 
@@ -14,7 +14,9 @@ const FN_SIGNATURE = /^[A-Za-z_][A-Za-z0-9_]*\((|[a-z0-9\[\],]+)\)$/;
 export const MAX_SOURCE_BYTES = 512 * 1024;
 export const MAX_CONTRACT_NAME_LENGTH = 64;
 
-const PRESETS: Preset[] = ['aave-v3-flashloan-receiver', 'aave-v3-erc4626-vault'];
+// Every preset the shared contract knows. The rule corpus here only covers the two
+// Aave presets; the web app's engine covers all of them.
+const PRESETS: Preset[] = PRESET_LIST;
 const SCENARIOS: Scenario[] = ['supply-borrow', 'flashloan-simple', 'leverage-loop', 'vault-deposit'];
 
 export function assertContractName(value: unknown, field = 'contractName'): string {

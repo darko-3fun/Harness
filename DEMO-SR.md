@@ -16,14 +16,19 @@ u poslednjoj sekciji.
 
 ## 1. Generisanje (30 s)
 
-**Klikni preset `Aave v3 ERC-4626 Vault`. Pokaži opcije sa strane.**
+**Otvori padajući meni `Vaults` i izaberi `Aave V3 Vault`. Pokaži opcije sa strane.**
+
+> „Tri kategorije: vaultovi nad Aave-om, Morpho-om i Compound-om, launchpadi — fiksna
+> prodaja tokena i bonding curve koja završava u pravom Uniswap V2 pool-u — i Aave
+> flash-loan receiver. Šest preseta, svaki vezan za konkretne hakove."
+
 
 > „Biramo preset i podesimo opcije: kontrola pristupa, pauza, deposit cap, decimals
 > offset. Kod se prepisuje dok kucaš."
 
 **Klikni kroz tabove fajlova.**
 
-> „Tri fajla odmah: ugovor, attack testovi, deploy skripta. Ovo nije LLM koji piše kod —
+> „Četiri fajla odmah: ugovor, attack testovi, property testovi, deploy skripta. Ovo nije LLM koji piše kod —
 > ovo je deterministički generator. Isti ulaz uvek daje isti izlaz, i svaka opcija koja
 > bi napravila nesiguran ugovor se odbija umesto da se generiše."
 
@@ -33,16 +38,36 @@ u poslednjoj sekciji.
 
 **Klikni `Audit`.**
 
-> „Audit prolazi kroz katalog od 18 nalaza, svaki vezan za konkretan incident sa linkom.
+> „Audit prolazi kroz katalog od 38 nalaza, svaki vezan za konkretan incident sa linkom.
 > Na generisanom kodu je sve zeleno — i to je poenta: pravilo koje se nikad ne okine
 > izgleda isto kao pravilo koje radi."
 
 **Obriši `using SafeERC20 for IERC20;` iz editora, pa opet klikni `Audit`.**
 
 > „Zato smo svako pravilo mutaciono testirali. Sklonim jednu zaštitu — okine se tačno
-> jedan nalaz, onaj pravi, i nijedan drugi."
+> jedan nalaz, onaj pravi, i nijedan drugi. I audit gleda kod, ne tekst: komentari i
+> stringovi se maskiraju pre provere, pa zaštita koja postoji samo u komentaru ne prolazi."
 
 *(Ovo je jak trenutak. Sačekaj sekundu da žiri vidi crveno.)*
+
+---
+
+## 2b. Zašto dva test fajla (30 s) ⭐
+
+**Klikni tab `Properties`. Otvori se panel sa strane.**
+
+> „Testovi koji samo proveravaju kod koji smo mi napisali bili bi dekoracija — generisani
+> ugovor ih prolazi po konstrukciji. Zato svaki download nosi dva fajla sa dva različita
+> posla. Attack testovi su regresija za zaštite: obrišeš zaštitu, pukne test koji je
+> imenuje. Property testovi su za ono što korisnik DODA: fuzz i invarijante koje moraju da
+> važe za bilo koju strategiju ili feature nadograđen na ugovor — nikad ne izvučeš više
+> nego što si uložio, donacija ne pomera cenu, knjiga nikad ne premaši poziciju na tržištu,
+> svako uvek može da izađe."
+
+> „Ti testovi su nam sami našli bag u našem Aave vaultu pre nego što je isporučen: Aave
+> zaokružuje scaled balance i knjiga je mogla da bude jedan wei iznad pozicije, što obara
+> poslednjeg ko izlazi. Popravljeno u generatoru."
+
 
 ---
 
@@ -74,8 +99,24 @@ u poslednjoj sekciji.
 
 **Ako imaš terminal spreman, pusti `forge test`. Ako ne, pokaži screenshot.**
 
-> „Sedam testova po presetu, dvadeset jedan ukupno, svi zeleni na mainnet forku preko
-> Tenderly-ja."
+> „Devedeset sedam testova ukupno kroz šest preseta, svi zeleni na mainnet forku —
+> uključujući graduaciju bonding curve-a u pravi Uniswap V2 pool. I to za bilo koji asset:
+> isti paket prolazi i za USDC i za WETH."
+
+---
+
+## 4b. Compound i launchpadi (30 s)
+
+**Prebaci na `Compound V3 Vault`, pa na `Launchpads → Bonding Curve`.**
+
+> „Compound v3 ima zamku koju ni Aave ni Morpho nemaju: `withdraw` preko balansa tiho
+> otvara borrow, a kolateral vaultu može da pokloni bilo ko. Vault ograničava svaki
+> withdraw na poziciju i proverava da dug ostane nula."
+
+> „Bonding curve: tokeni su zaključani do graduacije — to je Four.meme bag iz 2025,
+> dva puta. Likvidnost se mintuje direktno na pair-u, ne kroz router, pa unapred
+> nasađen pool ne može da odredi cenu. LP ide na dead adresu. Vlasnik ne može da dođe do
+> rezervi ni na koji način — to je ono što je pump.fun insajder iskoristio."
 
 ---
 
@@ -97,18 +138,19 @@ u poslednjoj sekciji.
 
 | Tvrdnja | Dokaz |
 |---|---|
-| Testovi rade | 21/21 na mainnet forku, 7 po presetu |
-| Generator ne pravi smeće | 196/288 kombinacija opcija prolazi, 92 odbijeno kao nesigurno |
-| Kod se kompajlira | 16 Morpho varijanti, 0 warninga |
-| Audit pravila stvarno rade | 9 pravila mutaciono testirano — svako se okine na svoju mutaciju i ni na jednu tuđu |
-| Download radi | Čist unzip → `setup.sh` → `forge test` → prolazi |
+| Testovi rade | 97/97 na mainnet forku kroz šest preseta; ista četiri asset-vezana preseta i sa WETH-om: 64/64 |
+| Generator ne pravi smeće | Nesigurne kombinacije se odbijaju sa porukom po polju, ne generišu |
+| Kod se kompajlira | Svih šest preseta, solc 0.8.27, 0 grešaka, 0 warninga |
+| Audit pravila stvarno rade | 38 nalaza, 53 mutacije — svaka se okine tačno na svoj nalaz i ni na jedan tuđi |
+| Download radi | Čist unzip → `setup.sh` → `forge test` → prolazi, za svih šest preseta |
 
 ## Ako pitaju „šta ne radi još?"
 
 Budi iskren, to ostavlja bolji utisak nego izbegavanje:
 
-> „Panel sa preporukama za parametre vaulta čita žive Aave podatke, pa za sada radi samo
-> za Aave presete. Za Morpho treba da ga povežemo na stanje marketa — to je sledeći korak."
+> „Deploy i simulacija kroz Tenderly žive u `harness-api` i traže sopstveni Virtual
+> Environment — onaj na kome je projekat pravljen je sada rate-limited. Sve ostalo —
+> generisanje, audit, savetnik za sva tri tržišta, export, MCP — radi bez ključeva."
 
 ---
 
@@ -122,15 +164,16 @@ Ovo je dobro pitanje da ti postave — imaš jak odgovor.
 > adresa tokena, jedan token je jedna rezerva. WETH: druge decimale, drugi cap,
 > drugi APY, i preporuka za offset se menja jer zavisi od decimala.
 >
-> Na Morpho-u ne. Morpho market **nije** token — market je hash pet parametara:
+> Na Morpho-u drugačije. Morpho market **nije** token — market je hash pet parametara:
 > loan token, kolateral, oracle, IRM i LLTV. Isti USDC postoji u više Morpho
 > marketa sa različitim oracle-om i različitim LLTV-om. Zato „promeni asset" na
-> Morpho-u nije dobro definisana operacija — to znači „izaberi drugi market".
+> Morpho-u znači „izaberi drugi market".
 >
-> Zato vault pinuje market u konstruktoru, a savetnik odbija da analizira ako
-> asset nije loan token tog marketa. To je isti nalaz koji generator brani,
-> MRPH-MKT-018. Da smo tiho analizirali neki drugi market, dali bismo ti brojke
-> o marketu koji tvoj ugovor nikad ne dodirne."
+> Zato vault pinuje market u konstruktoru, a alat nosi katalog najdubljih živih
+> marketa po assetu: promeniš asset na WETH i dobiješ picker sa wstETH/WETH marketima
+> i njihovim LLTV-om. Testovi, deploy skripta i savetnik svi gledaju u taj isti market —
+> to je nalaz MRPH-MKT-018 sproveden kroz ceo alat, ne samo kroz ugovor. Asset bez
+> kataloškog marketa se odbija umesto da se tiho analizira pogrešan market."
 
 **Ako pritisnu „a kako onda menjam Morpho market?":**
 
@@ -138,8 +181,9 @@ Ovo je dobro pitanje da ti postave — imaš jak odgovor.
 > možeš je da ga promeniš posle — nema settera, i test `test_MarketParamsArePinned`
 > to proverava."
 
-*(Demo: prebaci asset na WETH dok si na Morpho presetu — dobiješ objašnjenje, ne
-brojke. Odbijanje je funkcija, ne ograničenje.)*
+*(Demo: prebaci asset na WETH dok si na Morpho presetu — pojavi se picker marketa,
+ugovor, testovi i savetnik prate izbor. Izaberi WBTC — generator odbije sa porukom,
+jer nema kataloškog marketa. Odbijanje je funkcija, ne ograničenje.)*
 
 ## Tehnički detalji za potpitanja
 

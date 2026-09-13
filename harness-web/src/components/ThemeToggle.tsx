@@ -1,30 +1,35 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
 type Theme = 'light' | 'dark';
 
 /**
- * Theme lives on <html data-theme>, so every token swap is one attribute change
- * and nothing has to re-render to restyle. The choice is remembered; if there is
- * no stored choice we follow the OS.
+ * Theme lives on <html data-theme>, set before hydration by the inline script in
+ * layout.tsx so there is no flash. This component only reads and toggles it; the
+ * DOM attribute is the store, and a custom event is the subscription.
  */
-export default function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>('light');
+const EVENT = 'harness-theme';
 
-  useEffect(() => {
-    const stored = localStorage.getItem('harness-theme') as Theme | null;
-    const initial =
-      stored ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-    setTheme(initial);
-    document.documentElement.dataset.theme = initial;
-  }, []);
+function subscribe(cb: () => void) {
+  window.addEventListener(EVENT, cb);
+  return () => window.removeEventListener(EVENT, cb);
+}
+const read = (): Theme => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
+const readServer = (): Theme => 'light';
+
+export default function ThemeToggle() {
+  const theme = useSyncExternalStore(subscribe, read, readServer);
 
   function toggle() {
     const next: Theme = theme === 'light' ? 'dark' : 'light';
-    setTheme(next);
     document.documentElement.dataset.theme = next;
-    localStorage.setItem('harness-theme', next);
+    try {
+      localStorage.setItem('harness-theme', next);
+    } catch {
+      /* storage may be unavailable; the attribute still applies */
+    }
+    window.dispatchEvent(new Event(EVENT));
   }
 
   return (

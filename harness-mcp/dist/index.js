@@ -19,14 +19,18 @@ import { z } from 'zod';
  * from what the site serves.
  */
 const API_BASE = (process.env.HARNESS_API_BASE ?? 'https://harness-web-livid.vercel.app').replace(/\/$/, '');
-// Kept in step with PRESET_LIST in harness-web/src/types.ts. This package does not
-// share that module, so the API validates the preset too — a stale copy here is a
-// bad error message, never an accepted request for a preset the server rejects.
+// Kept in step with PRESET_LIST in contract/types.ts. This package does not share
+// that module, so the API validates the preset too — a stale copy here is a bad
+// error message, never an accepted request for a preset the server rejects.
 const PRESETS = [
-    'aave-v3-flashloan-receiver',
     'aave-v3-erc4626-vault',
     'morpho-blue-vault',
+    'compound-v3-vault',
+    'token-sale-launchpad',
+    'bonding-curve-launchpad',
+    'aave-v3-flashloan-receiver',
 ];
+const VAULT_PRESETS = ['aave-v3-erc4626-vault', 'morpho-blue-vault', 'compound-v3-vault'];
 async function callApi(path, body) {
     const res = await fetch(`${API_BASE}${path}`, {
         method: 'POST',
@@ -44,17 +48,18 @@ async function callApi(path, body) {
 const text = (s) => ({ content: [{ type: 'text', text: s }] });
 const server = new McpServer({ name: 'harness', version: '0.1.0' });
 server.registerTool('harness_audit', {
-    title: 'Audit Aave v3 Solidity',
-    description: 'Audit Solidity that integrates with Aave v3 against a corpus of documented ' +
-        'integration findings. Returns each finding as mitigated or triggered, with the ' +
-        'historical incident it derives from and a link to a runnable exploit PoC. ' +
-        'Call this on any contract that touches Aave — flash-loan receivers and ERC-4626 ' +
-        'vaults especially — before presenting it as finished.',
+    title: 'Audit DeFi Solidity',
+    description: 'Audit Solidity against a corpus of documented DeFi integration findings: ERC-4626 ' +
+        'vaults over Aave v3, Morpho Blue and Compound v3, token-sale and bonding-curve ' +
+        'launchpads, and Aave flash-loan receivers. Returns each finding as mitigated or ' +
+        'triggered, with the historical incident it derives from and a link to a runnable ' +
+        'exploit PoC. Every rule is mutation-tested. Call this on any contract of one of ' +
+        'these shapes before presenting it as finished.',
     inputSchema: {
         source: z.string().describe('The full Solidity source to audit.'),
         preset: z
             .enum(PRESETS)
-            .describe('Which integration shape the code is: a flash-loan receiver or an ERC-4626 vault.'),
+            .describe('Which shape the code is. The corpus applies the rules that fit that shape.'),
     },
 }, async ({ source, preset }) => {
     const r = await callApi('/api/audit', { source, preset });
@@ -86,11 +91,14 @@ server.registerTool('harness_audit', {
     return text(lines.join('\n'));
 });
 server.registerTool('harness_generate', {
-    title: 'Generate a hardened Aave v3 contract',
-    description: 'Generate an Aave v3 integration contract that is already hardened against the ' +
-        'documented findings, together with a Foundry attack suite that proves it. ' +
-        'Deterministic template composition — the same options always produce the same ' +
-        'code. Prefer this over writing an Aave integration from scratch.',
+    title: 'Generate a hardened DeFi contract',
+    description: 'Generate a DeFi contract that is already hardened against the documented findings — ' +
+        'an ERC-4626 vault over Aave v3, Morpho Blue or Compound v3, a fixed-price token sale, ' +
+        'a bonding-curve launch that graduates into Uniswap V2, or an Aave flash-loan receiver — ' +
+        'together with two Foundry suites that run on a mainnet fork: attack tests that fail ' +
+        'when a mitigation is removed, and fuzz/invariant properties that must keep holding ' +
+        'for anything built on top. Deterministic template composition: the same options ' +
+        'always produce the same code. Prefer this over writing one of these from scratch.',
     inputSchema: {
         preset: z.enum(PRESETS).describe('Which contract to generate.'),
         name: z
@@ -102,21 +110,39 @@ server.registerTool('harness_generate', {
             .string()
             .regex(/^0x[a-fA-F0-9]{40}$/)
             .optional()
-            .describe('Underlying ERC20 address. Defaults to mainnet USDC.'),
+            .describe('Underlying ERC20 address (vaults and the flash-loan receiver). Defaults to mainnet USDC. ' +
+            'Morpho: USDC, USDT, WETH or DAI. Compound: USDC, WETH or USDT.'),
         access: z.enum(['none', 'ownable', 'roles']).optional(),
         pausable: z.boolean().optional(),
         routerAllowlist: z.boolean().optional().describe('Flash-loan preset only.'),
-        claimRewards: z.boolean().optional(),
+        claimRewards: z.boolean().optional().describe('Aave and Compound presets.'),
         sweepEscapeHatch: z.boolean().optional(),
-        depositCap: z.string().optional().describe('Vault only. Raw token units, decimal string.'),
-        feeBps: z.number().int().min(0).max(1000).optional().describe('Vault only.'),
+        depositCap: z.string().optional().describe('Vaults. Raw token units, decimal string.'),
+        feeBps: z.number().int().min(0).max(1000).optional().describe('Vaults. Performance fee on yield.'),
         decimalsOffset: z
             .number()
             .int()
             .min(0)
             .max(12)
             .optional()
-            .describe('Vault only. Virtual-share exponent defending the inflation attack.'),
+            .describe('Vaults. Virtual-share exponent defending the inflation attack.'),
+        morphoMarketId: z
+            .string()
+            .regex(/^0x[a-fA-F0-9]{64}$/)
+            .optional()
+            .describe('Morpho vault. A catalogued market id; defaults to the deepest market for the asset.'),
+        tokenPriceWei: z.string().optional().describe('Token sale. Wei per whole token.'),
+        hardCapWei: z.string().optional().describe('Token sale. Total ETH accepted, in wei.'),
+        softCapWei: z.string().optional().describe('Token sale. Below this at close the sale refunds, in wei.'),
+        minContributionWei: z.string().optional().describe('Token sale. Per-transaction floor in wei; 0 disables.'),
+        maxContributionWei: z.string().optional().describe('Token sale. Per-wallet ceiling in wei; 0 disables.'),
+        whitelist: z.boolean().optional().describe('Token sale. Merkle allowlist bound to the caller.'),
+        vestingCliffDays: z.number().int().min(0).max(365).optional().describe('Token sale.'),
+        vestingDurationDays: z.number().int().min(0).max(1460).optional().describe('Token sale. Linear after the cliff.'),
+        curveSupply: z.string().optional().describe('Bonding curve. Whole tokens sold on the curve.'),
+        graduationEth: z.string().optional().describe('Bonding curve. Wei raised at which it graduates into Uniswap V2.'),
+        tradingFeeBps: z.number().int().min(0).max(500).optional().describe('Bonding curve.'),
+        maxWalletBps: z.number().int().min(0).max(5000).optional().describe('Bonding curve. 0, or 50..5000 bps of the curve per wallet.'),
     },
 }, async (args) => {
     const r = await callApi('/api/generate', args);
@@ -126,8 +152,11 @@ server.registerTool('harness_generate', {
         `// src/${r.contractName}.sol`,
         r.contractSource,
         '',
-        `// test/${r.contractName}.attack.t.sol — ${r.testNames.length} tests: ${r.testNames.join(', ')}`,
+        `// test/${r.contractName}.attack.t.sol — ${r.testNames.length} attack tests, each fails when its mitigation is removed: ${r.testNames.join(', ')}`,
         r.attackTestSource,
+        '',
+        `// test/${r.contractName}.props.t.sol — ${r.propertyTests.length} properties that must keep holding for anything built on top`,
+        r.propertyTestSource,
         '',
         `// script/${r.contractName}.s.sol`,
         r.deployScriptSource,
@@ -139,14 +168,19 @@ server.registerTool('harness_vault_settings', {
         "against a lending market's live state, sweep neighbouring values to show where " +
         'each verdict flips, and stress the deposit cap against rising utilisation. Use ' +
         'this before committing to vault parameters — the correct values depend on current ' +
-        'market headroom, liquidity and APY, not on taste. Supports both Aave v3 and ' +
-        'Morpho Blue, which answer differently: Morpho has no supply cap at all, so ' +
-        'liquidity is the only ceiling.',
+        'market headroom, liquidity and APY, not on taste. Supports Aave v3, Morpho Blue and ' +
+        'Compound v3, which answer differently: Morpho and Compound have no supply cap on ' +
+        'the asset at all, so liquidity is the only ceiling.',
     inputSchema: {
         preset: z
-            .enum(['aave-v3-erc4626-vault', 'morpho-blue-vault'])
+            .enum(VAULT_PRESETS)
             .default('aave-v3-erc4626-vault')
             .describe('Which lending market to judge against.'),
+        morphoMarketId: z
+            .string()
+            .regex(/^0x[a-fA-F0-9]{64}$/)
+            .optional()
+            .describe('Morpho only. A catalogued market id; defaults to the deepest market for the asset.'),
         asset: z
             .string()
             .regex(/^0x[a-fA-F0-9]{40}$/)

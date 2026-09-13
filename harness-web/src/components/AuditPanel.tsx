@@ -12,11 +12,9 @@ const SEV: Record<string, { fg: string; bg: string }> = {
 
 export default function AuditPanel({
   result,
-  live,
   onClose,
 }: {
   result: AuditResult;
-  live: boolean;
   onClose: () => void;
 }) {
   const [open, setOpen] = useState<string | null>(
@@ -32,14 +30,12 @@ export default function AuditPanel({
         <span className="text-[15px] text-[var(--text-muted)]">
           {result.score.mitigated} mitigated, {result.score.triggered} triggered
         </span>
-        {!live && (
-          <span
-            title="Agent B's /audit is not wired up yet; these come from a local mock using the same rule shape."
-            className="rounded-full bg-[var(--card-2)] px-2 py-0.5 text-[12px] text-[var(--text-muted)]"
-          >
-            mock
-          </span>
-        )}
+        <span
+          title="Every rule is mutation-tested: the clean output triggers nothing, and removing one mitigation triggers exactly the finding that names it."
+          className="rounded-full bg-[var(--card-2)] px-2 py-0.5 text-[12px] text-[var(--text-muted)]"
+        >
+          {result.findings.length} rules
+        </span>
         <button
           onClick={onClose}
           aria-label="Close audit"

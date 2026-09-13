@@ -10,6 +10,8 @@ export interface SettingAdvice {
   verdict: Verdict;
   current: string;
   recommended?: string;
+  /** The recommended value in the option's own units, ready to apply. */
+  recommendedRaw?: string;
   finding?: string;
   detail: string;
 }

@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# harness-web
 
-## Getting Started
+The HARNESS app: a Next.js wizard that generates hardened DeFi contracts, audits Solidity
+against a corpus of documented findings, and exports a runnable Foundry project. See the
+[root README](../README.md) for what it is and why.
 
-First, run the development server:
+## Run
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev          # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+No environment variables are required. Optional:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Variable | Effect |
+|---|---|
+| `HARNESS_RPC_URL` | RPC the settings advisor reads live market state from (default: a free public endpoint) |
+| `NEXT_PUBLIC_API_BASE` | Send compiles to a running `harness-api` instead of the local solc route |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Check
 
-## Learn More
+```bash
+npm run typecheck     # tsc
+npm run lint          # eslint
+npm run verify        # every preset compiles with solc; audit rules pass the mutation test
+npm run verify:emit   # write every exported project to .harness-out/ for forge
+npm run preview -- <preset> [contract|attacks|properties|deploy] [json-overrides]
+```
 
-To learn more about Next.js, take a look at the following resources:
+To run a generated project's suites on a mainnet fork, emit it and follow its README —
+`setup.sh`, then `forge test`. Foundry is not a dependency of the app itself.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Layout
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+src/types.ts                  copy of ../contract/types.ts (never edit here; run sync:shared)
+src/generator/
+  index.ts                    preset dispatch, labels, blurbs, defaults
+  shared.ts                   validation, access gates, print polish
+  markets.ts                  the on-chain catalogue: assets, Aave, Morpho markets, Comets, Uniswap
+  aave/ morpho/ compound/     one generator per vault; aave/ also has the flash-loan receiver
+  launchpad/                  token sale, bonding curve
+  vaults/                     ERC-4626 limits and yield booking shared by every vault
+  attacks/                    attack-test assembler + per-preset test/deploy scaffolds
+  properties/                 fuzz + invariant assembler
+  deployScript.ts             Foundry deploy script from the same builder as the contract
+src/audit/                    findings corpus + rule engine (masked, concept-based, mutation-tested)
+src/lib/exportProject.ts      zip layout, foundry.toml, setup.sh, README, Remix link
+src/app/api/                  generate, audit, compile (solc), vault-analysis (live market reads)
+src/components/               editor, preset menus, audit / advice / tests panels
+scripts/                      compile-all, mutate-audit, emit-projects, preview, sync-shared
+```
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Adding a preset means: a case in `generator/index.ts`, a scaffold in
+`attacks/scaffold.ts`, snippets in `../fixtures/attack-snippets.json`, a body in
+`properties/assemblePropertyTests.ts`, findings in `audit/findings.ts`, mutations in
+`scripts/mutate-audit.ts`. The `Preset` union is exhaustive, so anything missed is a
+compile error.

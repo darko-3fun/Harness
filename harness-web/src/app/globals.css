@@ -127,7 +127,7 @@ body {
     background-color ease-in-out 0.15s,
     border-color ease-in-out 0.15s;
 }
-.btn:hover:not(:disabled):not([data-selected="true"]) {
+.btn:hover:not(:disabled):not([data-selected="true"]):not(.primary) {
   background: var(--card-2);
   border-color: var(--text-faint);
 }

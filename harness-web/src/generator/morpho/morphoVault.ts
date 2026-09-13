@@ -1,21 +1,25 @@
 import {
   ContractBuilder,
   defineFunctions,
-  printContract,
   requireAccessControl,
   setAccessControl,
   addPausable,
-  OptionsError,
 } from '@openzeppelin/wizard';
 
 import {
-  ADDRESS_RE,
-  CONTRACT_NAME_RE,
-  FINDING_IDS,
-  IMPORT_PATHS,
-  type FindingId,
-  type GenerateOptions,
-} from '@/types';
+  LIBS,
+  accessOf,
+  imp,
+  print,
+  throwIfInvalid,
+  validateCommon,
+  validateVaultSettings,
+  type ValidationMessages,
+} from '@/generator/shared';
+import { resolveMorphoMarket } from '@/generator/markets';
+import { addYieldBooking } from '@/generator/vaults/harvest';
+import { addErc4626Limits } from '@/generator/vaults/limits';
+import { BYTES32_RE, FINDING_IDS, IMPORT_PATHS, type FindingId, type GenerateOptions } from '@/types';
 
 /**
  * ERC-4626 vault over Morpho Blue.
@@ -34,36 +38,25 @@ import {
  *                 different oracle or LLTV; pinning them at construction doesn't.
  */
 
-const MORPHO_LIB = {
-  name: 'Morpho Blue',
-  path: '@morpho-org/morpho-blue',
-  version: '^1.0.0',
-};
-
-const imp = (name: string, path: string) => ({ name, path });
-
 function validate(opts: GenerateOptions): void {
-  const messages: Record<string, string> = {};
-  if (!CONTRACT_NAME_RE.test(opts.name)) messages.name = 'Not a valid Solidity identifier';
-  if (opts.asset !== undefined && !ADDRESS_RE.test(opts.asset)) {
-    messages.asset = 'Not a valid checksummed-length address';
+  const messages: ValidationMessages = {};
+  validateCommon(opts, messages);
+  validateVaultSettings(opts, messages);
+  if (opts.morphoMarketId !== undefined && !BYTES32_RE.test(opts.morphoMarketId)) {
+    messages.morphoMarketId = 'Must be a 32-byte market id';
   }
-  if (opts.depositCap !== undefined && !/^[0-9]{1,40}$/.test(opts.depositCap)) {
-    messages.depositCap = 'Must be a bounded decimal integer';
+  // The contract itself takes the market as constructor arguments and works for
+  // any market. The tests and the deploy script, however, have to pin a real one,
+  // and there is no registry to resolve it from — so an asset with no catalogued
+  // market is refused here, where the message reaches the user, rather than in
+  // the test assembler.
+  if (!messages.asset && !resolveMorphoMarket(opts.asset, opts.morphoMarketId)) {
+    messages.asset = opts.morphoMarketId
+      ? 'That market id is not one of the catalogued Morpho Blue markets for this asset'
+      : 'No catalogued Morpho Blue market lends this asset. Pick USDC, USDT, WETH or DAI.';
   }
-  if (
-    opts.decimalsOffset !== undefined &&
-    !(Number.isInteger(opts.decimalsOffset) && opts.decimalsOffset >= 0 && opts.decimalsOffset <= 12)
-  ) {
-    messages.decimalsOffset = 'Must be an integer between 0 and 12';
-  }
-  if (opts.access === 'none') {
-    messages.access = 'A vault holds principal; sweep and pause must be gated';
-  }
-  if (Object.keys(messages).length > 0) throw new OptionsError(messages);
+  throwIfInvalid(messages);
 }
-
-const accessOf = (opts: GenerateOptions) => (opts.access === 'none' ? false : opts.access);
 
 export function buildMorphoVault(opts: GenerateOptions): {
   contract: ContractBuilder;
@@ -97,21 +90,16 @@ export function buildMorphoVault(opts: GenerateOptions): {
   addMorphoConstructor(c, opts, applied);
   addMorphoAccounting(c, opts, applied);
   addMorphoDepositWithdraw(c, opts, applied);
+  addMorphoLimits(c, opts, applied);
   addMorphoHarvest(c, opts);
   addMorphoSurface(c, opts, applied);
 
   return { contract: c, appliedFindingIds: applied };
 }
 
-function polish(source: string): string {
-  return source
-    .replace(/[ \t]+$/gm, '')
-    .replace(/^\/\/\/ (title|notice|dev|author) /gm, '/// @$1 ');
-}
-
 export function printMorphoVault(opts: GenerateOptions): string {
   const { contract } = buildMorphoVault(opts);
-  return polish(printContract(contract, { additionalCompatibleLibraries: [MORPHO_LIB] }));
+  return print(contract, [LIBS.morpho]);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,11 +304,17 @@ function addMorphoDepositWithdraw(
   );
   c.setFunctionBody(
     [
-      '(uint256 withdrawn,) =',
-      '    MORPHO.withdraw(marketParams(), assets, SHARES_UNSET, address(this), address(this));',
-      'if (withdrawn < assets) revert WithdrawShortfall(assets, withdrawn);',
-      '',
-      '_managedAssets -= withdrawn;',
+      '// A redeem of dust shares can round to zero assets. Morpho rejects a zero-asset',
+      '// withdraw as "inconsistent input", so the market is only asked when there is',
+      '// something to ask for; the shares are burned either way.',
+      'uint256 withdrawn;',
+      'if (assets > 0) {',
+      '    (withdrawn,) =',
+      '        MORPHO.withdraw(marketParams(), assets, SHARES_UNSET, address(this), address(this));',
+      '    if (withdrawn < assets) revert WithdrawShortfall(assets, withdrawn);',
+      '    _managedAssets -= withdrawn;',
+      '    _clampToPosition();',
+      '}',
       'super._withdraw(caller, receiver, owner, withdrawn, shares);',
     ],
     fns._withdraw,
@@ -336,48 +330,45 @@ function addMorphoDepositWithdraw(
   if (opts.pausable) addPausable(c, accessOf(opts), [fns._deposit]);
 }
 
-/** Folds accrued Morpho interest into the internal figure. */
-function addMorphoHarvest(c: ContractBuilder, opts: GenerateOptions): void {
-  const fns = defineFunctions({
-    harvest: { kind: 'external', args: [], returns: ['uint256'], mutability: 'nonpayable' },
+/**
+ * Morpho markets cannot be paused and have no supply cap, so the only limit the
+ * market imposes is liquidity: supplied minus borrowed, interest accrued.
+ */
+function addMorphoLimits(c: ContractBuilder, opts: GenerateOptions, applied: FindingId[]): void {
+  addErc4626Limits(c, opts, applied, {
+    depositBlocked: [],
+    depositRoom: [],
+    withdrawBlocked: [],
+    liquidity: '_marketLiquidity()',
   });
 
-  const body = [
-    '// expectedSupplyAssets accrues interest first, so this is not a stale read.',
-    'uint256 held = MorphoBalancesLib.expectedSupplyAssets(MORPHO, marketParams(), address(this));',
-    'if (held <= _managedAssets) return 0;',
-    '',
-    'uint256 yield_ = held - _managedAssets;',
-  ];
-
-  if (opts.feeBps) {
-    c.addConstantOrImmutableOrErrorDefinition(`uint16 public constant FEE_BPS = ${opts.feeBps};`);
-    c.addStateVariable('address public feeRecipient;', false);
-    c.addConstructorArgument({ type: 'address', name: 'feeRecipient_' });
-    c.addConstructorCode('feeRecipient = feeRecipient_;');
-    body.push(
-      'uint256 fee = (yield_ * FEE_BPS) / 10_000;',
-      '',
-      '_managedAssets = held - fee;',
-      'if (fee > 0) {',
-      '    (uint256 paid,) =',
-      '        MORPHO.withdraw(marketParams(), fee, SHARES_UNSET, address(this), feeRecipient);',
-      '    _managedAssets -= (fee - paid);',
-      '}',
-      'emit Harvested(yield_, fee);',
-      'return yield_;',
-    );
-  } else {
-    body.push('_managedAssets = held;', 'emit Harvested(yield_, 0);', 'return yield_;');
-  }
-  c.addConstantOrImmutableOrErrorDefinition('event Harvested(uint256 yield, uint256 fee);');
-
+  const fns = defineFunctions({
+    _marketLiquidity: { kind: 'internal', args: [], returns: ['uint256'], mutability: 'view' },
+  });
   c.setFunctionComments(
-    ['/// @notice Credits accrued Morpho interest to the vault.'],
-    fns.harvest,
+    ['/// @dev What the market can pay out right now: supplied minus borrowed, interest accrued.'],
+    fns._marketLiquidity,
   );
-  c.setFunctionBody(body, fns.harvest);
-  requireAccessControl(c, fns.harvest, accessOf(opts), 'HARVESTER', 'harvester');
+  c.setFunctionBody(
+    [
+      '(uint256 totalSupplyAssets,, uint256 totalBorrowAssets,) =',
+      '    MorphoBalancesLib.expectedMarketBalances(MORPHO, marketParams());',
+      'return totalBorrowAssets >= totalSupplyAssets ? 0 : totalSupplyAssets - totalBorrowAssets;',
+    ],
+    fns._marketLiquidity,
+  );
+}
+
+/** Folds accrued Morpho interest into the internal figure; fees accrue and are collected separately. */
+function addMorphoHarvest(c: ContractBuilder, opts: GenerateOptions): void {
+  addYieldBooking(c, opts, {
+    position: 'MorphoBalancesLib.expectedSupplyAssets(MORPHO, marketParams(), address(this))',
+    payFee: [
+      '(uint256 paid,) =',
+      '    MORPHO.withdraw(marketParams(), fee, SHARES_UNSET, address(this), feeRecipient);',
+    ],
+    notes: ['/// @dev expectedSupplyAssets accrues interest first, so this is not a stale read.'],
+  });
 }
 
 function addMorphoSurface(

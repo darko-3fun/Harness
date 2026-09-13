@@ -29,9 +29,9 @@ Generation is deliberately the *second* tool — OpenZeppelin already ships
 
 | Tool | What it does |
 |---|---|
-| `harness_audit` | Solidity + preset → findings, each mitigated or triggered, with incident and PoC |
-| `harness_generate` | Preset + options → hardened contract, Foundry attack suite, deploy script |
-| `harness_vault_settings` | Vault parameters vs **live** Aave state, plus a sweep showing where each verdict flips |
+| `harness_audit` | Solidity + preset → findings, each mitigated or triggered, with incident and PoC. Six shapes: vaults over Aave v3 / Morpho Blue / Compound v3, token sale, bonding curve, flash-loan receiver |
+| `harness_generate` | Preset + options → hardened contract, Foundry attack suite, fuzz/invariant property suite, deploy script |
+| `harness_vault_settings` | Vault parameters vs the **live** market (Aave, Morpho or Compound), plus a sweep showing where each verdict flips |
 
 ## Install
 

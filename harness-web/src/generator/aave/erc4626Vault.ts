@@ -1,51 +1,31 @@
 import {
   ContractBuilder,
   defineFunctions,
-  printContract,
   requireAccessControl,
   setAccessControl,
   addPausable,
-  OptionsError,
 } from '@openzeppelin/wizard';
 
 import {
-  ADDRESS_RE,
-  CONTRACT_NAME_RE,
-  FINDING_IDS,
-  IMPORT_PATHS,
-  type FindingId,
-  type GenerateOptions,
-} from '@/types';
+  LIBS,
+  accessOf,
+  imp,
+  print,
+  throwIfInvalid,
+  validateCommon,
+  validateVaultSettings,
+  type ValidationMessages,
+} from '@/generator/shared';
+import { addYieldBooking } from '@/generator/vaults/harvest';
+import { addErc4626Limits } from '@/generator/vaults/limits';
+import { FINDING_IDS, IMPORT_PATHS, type FindingId, type GenerateOptions } from '@/types';
 
-const AAVE_LIB = { name: 'Aave v3 Core', path: '@aave/core-v3', version: '^1.19.0' };
-const imp = (name: string, path: string) => ({ name, path });
-
-/** §5.4 — reject, do not sanitize. Nothing user-supplied reaches a string literal. */
 function validate(opts: GenerateOptions): void {
-  const messages: Record<string, string> = {};
-  if (!CONTRACT_NAME_RE.test(opts.name)) messages.name = 'Not a valid Solidity identifier';
-  if (opts.asset !== undefined && !ADDRESS_RE.test(opts.asset)) {
-    messages.asset = 'Not a valid checksummed-length address';
-  }
-  if (opts.depositCap !== undefined && !/^[0-9]{1,40}$/.test(opts.depositCap)) {
-    messages.depositCap = 'Must be a bounded decimal integer';
-  }
-  if (opts.feeBps !== undefined && !(Number.isInteger(opts.feeBps) && opts.feeBps >= 0 && opts.feeBps <= 1000)) {
-    messages.feeBps = 'Must be an integer between 0 and 1000';
-  }
-  if (
-    opts.decimalsOffset !== undefined &&
-    !(Number.isInteger(opts.decimalsOffset) && opts.decimalsOffset >= 0 && opts.decimalsOffset <= 12)
-  ) {
-    messages.decimalsOffset = 'Must be an integer between 0 and 12';
-  }
-  if (opts.access === 'none') {
-    messages.access = 'A vault holds principal; harvest, sweep and pause must be gated';
-  }
-  if (Object.keys(messages).length > 0) throw new OptionsError(messages);
+  const messages: ValidationMessages = {};
+  validateCommon(opts, messages);
+  validateVaultSettings(opts, messages);
+  throwIfInvalid(messages);
 }
-
-const accessOf = (opts: GenerateOptions) => (opts.access === 'none' ? false : opts.access);
 
 export function buildErc4626Vault(opts: GenerateOptions): {
   contract: ContractBuilder;
@@ -80,21 +60,16 @@ export function buildErc4626Vault(opts: GenerateOptions): {
   addVaultConstructor(c, opts);
   addAccounting(c, opts, applied);
   addDepositWithdraw(c, opts, applied);
+  addLimits(c, opts, applied);
   addHarvest(c, opts, applied);
   addVaultSurface(c, opts, applied);
 
   return { contract: c, appliedFindingIds: applied };
 }
 
-function polish(source: string): string {
-  return source
-    .replace(/[ \t]+$/gm, '')
-    .replace(/^\/\/\/ (title|notice|dev|author) /gm, '/// @$1 ');
-}
-
 export function printErc4626Vault(opts: GenerateOptions): string {
   const { contract } = buildErc4626Vault(opts);
-  return polish(printContract(contract, { additionalCompatibleLibraries: [AAVE_LIB] }));
+  return print(contract, [LIBS.aave, LIBS.aavePeriphery]);
 }
 
 // ---------------------------------------------------------------------------
@@ -233,11 +208,19 @@ function addDepositWithdraw(c: ContractBuilder, opts: GenerateOptions, applied: 
   );
   c.setFunctionBody(
     [
-      'uint256 received = POOL.withdraw(asset(), assets, address(this));',
-      'if (received < assets) revert WithdrawShortfall(assets, received);',
-      '',
-      '_managedAssets -= received;',
-      'super._withdraw(caller, receiver, owner, received, shares);',
+      '// A full exit asks Aave for everything rather than for an exact figure: the',
+      '// scaled-balance conversion can round the exact figure one unit past what is',
+      '// held, and Aave would refuse it.',
+      '// A redeem of dust shares can round to zero assets; Aave rejects a zero withdraw,',
+      '// so the market is only asked when there is something to ask for.',
+      'if (assets > 0) {',
+      '    uint256 held = ATOKEN.balanceOf(address(this));',
+      '    uint256 received = POOL.withdraw(asset(), assets >= held ? type(uint256).max : assets, address(this));',
+      '    if (received < assets) revert WithdrawShortfall(assets, received);',
+      '    _managedAssets -= assets;',
+      '    _clampToPosition();',
+      '}',
+      'super._withdraw(caller, receiver, owner, assets, shares);',
     ],
     fns._withdraw,
   );
@@ -252,56 +235,54 @@ function addDepositWithdraw(c: ContractBuilder, opts: GenerateOptions, applied: 
   }
 }
 
-/** Folds accrued Aave interest into the internal figure, taking the fee on yield only. */
-function addHarvest(c: ContractBuilder, opts: GenerateOptions, applied: FindingId[]): void {
-  const fns = defineFunctions({
-    harvest: { kind: 'external', args: [], returns: ['uint256'], mutability: 'nonpayable' },
-  });
-
-  const body = [
-    'uint256 held = ATOKEN.balanceOf(address(this));',
-    'if (held <= _managedAssets) return 0;',
-    '',
-    'uint256 yield_ = held - _managedAssets;',
-  ];
-
-  if (opts.feeBps) {
-    c.addConstantOrImmutableOrErrorDefinition(`uint16 public constant FEE_BPS = ${opts.feeBps};`);
-    c.addStateVariable('address public feeRecipient;', false);
-    c.addConstructorArgument({ type: 'address', name: 'feeRecipient_' });
-    c.addConstructorCode('feeRecipient = feeRecipient_;');
-    body.push(
-      'uint256 fee = (yield_ * FEE_BPS) / 10_000;',
-      '',
-      '_managedAssets = held - fee;',
-      'if (fee > 0) {',
-      '    uint256 paid = POOL.withdraw(asset(), fee, feeRecipient);',
-      '    _managedAssets -= (fee - paid);',
+/**
+ * Aave can refuse a supply (reserve inactive, frozen or paused, or at its supply
+ * cap) and can be unable to pay a withdrawal (the aToken holds less underlying
+ * than is owed). Both are visible on chain, so the limits report them instead of
+ * letting the call revert.
+ */
+function addLimits(c: ContractBuilder, opts: GenerateOptions, applied: FindingId[]): void {
+  c.addImportOnly(imp('DataTypes', IMPORT_PATHS.DATA_TYPES));
+  c.addLibrary(imp('ReserveConfiguration', IMPORT_PATHS.RESERVE_CONFIGURATION), [
+    'DataTypes.ReserveConfigurationMap',
+  ]);
+  addErc4626Limits(c, opts, applied, {
+    depositBlocked: [
+      'DataTypes.ReserveConfigurationMap memory cfg = POOL.getConfiguration(asset());',
+      'if (!cfg.getActive() || cfg.getFrozen() || cfg.getPaused()) return 0;',
+    ],
+    depositRoom: [
+      'uint256 cap = cfg.getSupplyCap();',
+      'if (cap != 0) {',
+      '    // Aave counts the cap in whole tokens against the aToken supply.',
+      '    uint256 capRaw = cap * 10 ** cfg.getDecimals();',
+      '    uint256 supplied = IERC20(address(ATOKEN)).totalSupply();',
+      '    room = supplied >= capRaw ? 0 : capRaw - supplied;',
       '}',
-      'emit Harvested(yield_, fee);',
-      'return yield_;',
-    );
-    c.addConstantOrImmutableOrErrorDefinition('event Harvested(uint256 yield, uint256 fee);');
-  } else {
-    body.push(
-      '_managedAssets = held;',
-      'emit Harvested(yield_, 0);',
-      'return yield_;',
-    );
-    c.addConstantOrImmutableOrErrorDefinition('event Harvested(uint256 yield, uint256 fee);');
-  }
+    ],
+    withdrawBlocked: ['if (POOL.getConfiguration(asset()).getPaused()) return 0;'],
+    liquidity: 'IERC20(asset()).balanceOf(address(ATOKEN))',
+  });
+}
 
-  c.setFunctionComments(
-    [
-      '/// @notice Credits accrued Aave interest to the vault.',
+/**
+ * Folds accrued Aave interest into the internal figure, taking the fee on yield only.
+ *
+ * The fee is accrued, not withdrawn: a harvest that tried to pull a dust-sized fee
+ * out of Aave would revert (a withdraw whose scaled amount rounds to zero is
+ * refused) and block the whole harvest. collectFees() pays the accumulated fee
+ * out separately, when it is worth paying.
+ */
+function addHarvest(c: ContractBuilder, opts: GenerateOptions, applied: FindingId[]): void {
+  addYieldBooking(c, opts, {
+    position: 'ATOKEN.balanceOf(address(this))',
+    payFee: ['uint256 paid = POOL.withdraw(asset(), fee, feeRecipient);'],
+    notes: [
       '/// @dev Reading the aToken balance HERE is safe: a donation is credited to all',
       '/// @dev holders rather than moving the price against the next depositor, and the',
       '/// @dev decimals offset covers the empty-vault case.',
     ],
-    fns.harvest,
-  );
-  c.setFunctionBody(body, fns.harvest);
-  requireAccessControl(c, fns.harvest, accessOf(opts), 'HARVESTER', 'harvester');
+  });
   applied.push(FINDING_IDS.ORACLE_SCALE_MISMATCH);
 }
 

@@ -1,15 +1,26 @@
 import JSZip from 'jszip';
 
-import { printPreset } from '@/generator';
-import { printDeployScript } from '@/generator/aave/deployScript';
+import { PRESET_LABELS, printPreset } from '@/generator';
+import { printDeployScript } from '@/generator/deployScript';
 import {
   assembleAttackTests,
+  type AssembledTest,
   type AttackSnippetFile,
 } from '@/generator/attacks/assembleAttackTests';
-import { EVM_VERSION, REMAPPINGS, SOLC_VERSION, type GenerateOptions } from '@/types';
+import { FORK_BLOCK } from '@/generator/markets';
+import { assemblePropertyTests, type PropertyTest } from '@/generator/properties/assemblePropertyTests';
+import {
+  EVM_VERSION,
+  FINDING_TITLES,
+  PRESET_CATEGORY,
+  REMAPPINGS,
+  SOLC_VERSION,
+  type FindingId,
+  type GenerateOptions,
+} from '@/types';
 
 /**
- * A9 — a Foundry project the user can actually run, and a Remix link that needs no
+ * A Foundry project the user can actually run, and a Remix link that needs no
  * infrastructure at all.
  *
  * `zipFoundry` from @openzeppelin/wizard is not usable here: the published package
@@ -18,13 +29,11 @@ import { EVM_VERSION, REMAPPINGS, SOLC_VERSION, type GenerateOptions } from '@/t
  */
 
 /**
- * The demo environment's PUBLIC RPC. It serves archive state at FORK_BLOCK, which a
- * free public endpoint will not. Deliberately not the Admin RPC — that one carries
- * tenderly_setBalance and friends and must never reach a downloadable file.
+ * A free archive endpoint that serves state at FORK_BLOCK. Chosen over the
+ * project's own Tenderly Virtual Environment because that one now answers with
+ * "rate limit exceeded"; a downloaded project must run without a key.
  */
-const DEMO_RPC =
-  'https://virtual.mainnet.eu.rpc.tenderly.co/petnica2026/project/harness-mainnet-1786200683168';
-const FORK_BLOCK = '25710954';
+export const DEFAULT_RPC = 'https://eth.drpc.org';
 
 const FOUNDRY_TOML = `[profile.default]
 src = "src"
@@ -36,35 +45,51 @@ evm_version = "${EVM_VERSION}"
 optimizer = true
 optimizer_runs = 200
 
-# The attack suite forks real mainnet. Point MAINNET_RPC_URL at any archive-capable
-# endpoint, or at the Tenderly Virtual Environment's public RPC.
+# Free archive RPCs time out under a burst of requests: run the two suites one after
+# the other rather than in parallel. If the RPC still times out, add
+#   --fork-retries 10 --fork-retry-backoff 1000 --compute-units-per-second 50
+# to the forge command.
+threads = 1
+
+# The suites fork real mainnet. Point MAINNET_RPC_URL at an archive-capable
+# endpoint; the one in .env.example is free and serves the pinned block.
 [rpc_endpoints]
 mainnet = "\${MAINNET_RPC_URL}"
+
+# Property tests. Fork runs are slow, so the counts are modest; raise them for a
+# nightly run. fail_on_revert is deliberate: the handler only performs valid
+# actions, so a revert inside one is a finding, not noise.
+[fuzz]
+runs = 64
+max_test_rejects = 65536
+
+[invariant]
+runs = 8
+depth = 24
+fail_on_revert = true
 `;
 
-/**
- * The `forge install` lines, chosen by preset.
- *
- * This was a flat constant naming the two Aave repos. Once the Morpho preset
- * shipped, an exported Morpho project carried a remappings.txt pointing at
- * lib/morpho-blue and a setup.sh that never created it — so the download failed
- * on its first `forge test`, which is the one outcome this file exists to
- * prevent. Deriving the list from the preset makes that mismatch impossible.
- */
+/** The `forge install` lines, chosen by preset so remappings and libs cannot disagree. */
 function setupSh(preset: GenerateOptions['preset']): string {
-  const deps: [string, string][] =
-    preset === 'morpho-blue-vault'
-      ? [
-          ['foundry-rs/forge-std', 'lib/forge-std'],
-          ['OpenZeppelin/openzeppelin-contracts', 'lib/openzeppelin-contracts'],
-          ['morpho-org/morpho-blue', 'lib/morpho-blue'],
-        ]
-      : [
-          ['foundry-rs/forge-std', 'lib/forge-std'],
-          ['OpenZeppelin/openzeppelin-contracts', 'lib/openzeppelin-contracts'],
-          ['aave/aave-v3-core', 'lib/aave-v3-core'],
-          ['aave/aave-v3-periphery', 'lib/aave-v3-periphery'],
-        ];
+  const base: [string, string][] = [
+    ['foundry-rs/forge-std', 'lib/forge-std'],
+    ['OpenZeppelin/openzeppelin-contracts', 'lib/openzeppelin-contracts'],
+  ];
+  const byPreset: Record<GenerateOptions['preset'], [string, string][]> = {
+    'aave-v3-erc4626-vault': [
+      ['aave/aave-v3-core', 'lib/aave-v3-core'],
+      ['aave/aave-v3-periphery', 'lib/aave-v3-periphery'],
+    ],
+    'aave-v3-flashloan-receiver': [
+      ['aave/aave-v3-core', 'lib/aave-v3-core'],
+      ['aave/aave-v3-periphery', 'lib/aave-v3-periphery'],
+    ],
+    'morpho-blue-vault': [['morpho-org/morpho-blue', 'lib/morpho-blue']],
+    'compound-v3-vault': [],
+    'token-sale-launchpad': [],
+    'bonding-curve-launchpad': [],
+  };
+  const deps = [...base, ...byPreset[preset]];
 
   const width = Math.max(...deps.map(([repo]) => repo.length));
   const installs = deps
@@ -83,28 +108,42 @@ set -euo pipefail
 ${installs}
 
 echo
-echo "Now set MAINNET_RPC_URL and run:  forge test -vv"
+echo "Now:  cp .env.example .env && forge test -vv"
 `;
 }
 
-const ENV_EXAMPLE = `# The HARNESS demo Tenderly Virtual Environment (public RPC, read-only: it rejects
-# admin cheatcodes). Swap it for your own endpoint for anything beyond a trial run.
+const ENV_EXAMPLE = `# An archive-capable Ethereum RPC. The default is free and serves the pinned block;
+# swap in your own endpoint for anything beyond a trial run.
 #
-# IMPORTANT: this must be an ARCHIVE-capable endpoint if TENDERLY_FORK_BLOCK is set.
-# Free public RPCs prune old state and answer 403 "Archive requests require a
-# personal token" once the pinned block is more than ~128 blocks behind head.
-MAINNET_RPC_URL=${DEMO_RPC}
+# IMPORTANT: this must be an ARCHIVE endpoint while TENDERLY_FORK_BLOCK is set. Most
+# free RPCs prune old state and refuse blocks more than ~128 behind head.
+MAINNET_RPC_URL=${DEFAULT_RPC}
 
-# Pinned so the suite is reproducible: an unpinned fork drifts with mainnet, and a
+# Pinned so the suites are reproducible: an unpinned fork drifts with mainnet, and a
 # suite that is green today goes red tomorrow for reasons unrelated to the code.
-# Comment this out to fork at latest, which works on any RPC including free ones.
+# Set to 0 to fork at the latest block, which works on any RPC including free ones.
 TENDERLY_FORK_BLOCK=${FORK_BLOCK}
 
 # Only needed for script/*.s.sol broadcasts.
 PRIVATE_KEY=
 `;
 
-function readme(opts: GenerateOptions, testNames: string[], findingIds: string[]): string {
+function readme(
+  opts: GenerateOptions,
+  attacks: AssembledTest[],
+  properties: PropertyTest[],
+  findingIds: string[],
+): string {
+  const category = PRESET_CATEGORY[opts.preset];
+  const what =
+    category === 'vault'
+      ? 'An ERC-4626 vault over a live lending market'
+      : category === 'launchpad'
+        ? 'A token launchpad contract'
+        : 'An Aave v3 flash-loan receiver';
+  const fuzz = properties.filter((p) => p.kind === 'fuzz');
+  const invariants = properties.filter((p) => p.kind === 'invariant');
+
   return `# ${opts.name}
 
 Generated by [HARNESS](https://harness-web-livid.vercel.app) — the wizard that ships
@@ -112,39 +151,45 @@ the attacks on the code it writes.
 
 ## What this is
 
-An Aave v3 integration contract, hardened against ${findingIds.length} documented findings,
-plus a Foundry suite that attacks it on a fork of real mainnet.
+${what} (${PRESET_LABELS[opts.preset]}), hardened against ${findingIds.length} documented
+findings, plus two Foundry suites that run against the real protocol on a fork of mainnet.
 
 | File | |
 |---|---|
 | \`src/${opts.name}.sol\` | the contract |
-| \`test/${opts.name}.attack.t.sol\` | ${testNames.length} attack tests, each citing a real incident |
+| \`test/${opts.name}.attack.t.sol\` | ${attacks.length} attack tests, one per mitigation, each citing a real incident |
+| \`test/${opts.name}.props.t.sol\` | ${fuzz.length} fuzz tests and ${invariants.length} invariants over whatever you build on top |
 | \`script/${opts.name}.s.sol\` | deploy script |
 
 ## Run it
 
 \`\`\`bash
 ./setup.sh
-cp .env.example .env    # set MAINNET_RPC_URL
+cp .env.example .env    # the default RPC is free and serves the pinned block
 forge test -vv
 \`\`\`
 
-The tests fork mainnet and run against the live Aave Pool, resolved through the
-PoolAddressesProvider rather than hardcoded.
+Run only the fast regressions with \`forge test --match-path 'test/*.attack.t.sol'\`.
 
-## The tests
+## Why there are two suites
 
-${testNames.map((t) => `- \`${t}\``).join('\n')}
+**The attack suite is the regression suite for the mitigations.** Every test is
+derived from a documented incident and fails when the mitigation it names is
+removed. It does not prove the code is safe — it proves the code still has the
+defences it shipped with. Delete one and re-run: the matching test goes red.
+
+**The property suite is for what you add.** Its properties hold for the generated
+contract and must keep holding for any strategy, hook or feature you layer on top.
+Foundry drives them with random inputs and random action sequences, so they exercise
+your code, not a fixed example.
+
+${attacks.map((t) => `- \`${t.testName}\` — ${t.findingId}: ${FINDING_TITLES[t.findingId] ?? t.title}`).join('\n')}
+
+${properties.map((p) => `- \`${p.name}\` — ${p.claim}`).join('\n')}
 
 ## Findings mitigated
 
-${findingIds.map((f) => `- \`${f}\``).join('\n')}
-
-## Prove they mean something
-
-Delete a mitigation and re-run — the corresponding test should fail. If it does not,
-the test is decoration. For example, removing the \`initiator != address(this)\` check
-from a flash-loan receiver should turn \`test_RejectsThirdPartyInitiator\` red.
+${findingIds.map((f) => `- \`${f}\` — ${FINDING_TITLES[f as FindingId] ?? ''}`).join('\n')}
 
 ## Attribution
 
@@ -157,22 +202,52 @@ This generated code is MIT. HARNESS itself is AGPL-3.0.
 `;
 }
 
+/** Everything a project export contains, before zipping. Also what the UI previews. */
+export interface ProjectFiles {
+  contract: string;
+  attackTests: string;
+  propertyTests: string;
+  deployScript: string;
+  attacks: AssembledTest[];
+  properties: PropertyTest[];
+}
+
+export function buildProjectFiles(
+  opts: GenerateOptions,
+  snippets: AttackSnippetFile,
+  /** The contract as edited in the browser, if the user changed it. */
+  editedContract?: string | null,
+): ProjectFiles {
+  const attack = assembleAttackTests(opts, snippets);
+  const props = assemblePropertyTests(opts);
+  return {
+    contract: editedContract ?? printPreset(opts),
+    attackTests: attack.source,
+    propertyTests: props.source,
+    deployScript: printDeployScript(opts),
+    attacks: attack.tests,
+    properties: props.tests,
+  };
+}
+
 export async function buildProjectZip(
   opts: GenerateOptions,
   snippets: AttackSnippetFile,
   findingIds: string[],
+  editedContract?: string | null,
 ): Promise<Blob> {
-  const { source: tests, testNames } = assembleAttackTests(opts, snippets);
+  const files = buildProjectFiles(opts, snippets, editedContract);
 
   const zip = new JSZip();
-  zip.file(`src/${opts.name}.sol`, printPreset(opts));
-  zip.file(`test/${opts.name}.attack.t.sol`, tests);
-  zip.file(`script/${opts.name}.s.sol`, printDeployScript(opts));
+  zip.file(`src/${opts.name}.sol`, files.contract);
+  zip.file(`test/${opts.name}.attack.t.sol`, files.attackTests);
+  zip.file(`test/${opts.name}.props.t.sol`, files.propertyTests);
+  zip.file(`script/${opts.name}.s.sol`, files.deployScript);
   zip.file('foundry.toml', FOUNDRY_TOML);
   zip.file('remappings.txt', REMAPPINGS.join('\n') + '\n');
   zip.file('.env.example', ENV_EXAMPLE);
   zip.file('setup.sh', setupSh(opts.preset), { unixPermissions: '755' });
-  zip.file('README.md', readme(opts, testNames, findingIds));
+  zip.file('README.md', readme(opts, files.attacks, files.properties, findingIds));
 
   return zip.generateAsync({ type: 'blob' });
 }
@@ -180,14 +255,25 @@ export async function buildProjectZip(
 /**
  * Remix reads the contract straight out of the URL fragment. Mechanism per OZ's
  * own `ui/src/solidity/remix.ts`: base64 of the UTF-8 bytes, padding stripped.
+ *
+ * The remappings are the versioned npm form Remix resolves through unpkg — not the
+ * `lib/` paths from remappings.txt, which do not exist in Remix and would have
+ * broken every import.
  */
+const REMIX_REMAPS = [
+  '@openzeppelin/contracts/=@openzeppelin/contracts@5.6.1/',
+  '@aave/core-v3/=@aave/core-v3@1.19.3/',
+  '@aave/periphery-v3/=@aave/periphery-v3@2.5.2/',
+  '@morpho-org/morpho-blue/=@morpho-org/morpho-blue@1.0.0/',
+];
+
 export function remixUrl(source: string): string {
   const bytes = new TextEncoder().encode(source);
   let binary = '';
   for (const b of bytes) binary += String.fromCharCode(b);
   const code = btoa(binary).replace(/=*$/, '');
 
-  const remaps = btoa(REMAPPINGS.join('\n')).replace(/=*$/, '');
+  const remaps = btoa(REMIX_REMAPS.join('\n')).replace(/=*$/, '');
   return (
     `https://remix.ethereum.org/#code=${code}` +
     `&remaps=${remaps}` +

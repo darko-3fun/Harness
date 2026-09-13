@@ -1,22 +1,17 @@
-import {
-  ContractBuilder,
-  defineFunctions,
-  printContract,
-  requireAccessControl,
-  setAccessControl,
-  addPausable,
-  OptionsError,
-} from '@openzeppelin/wizard';
+import { ContractBuilder, defineFunctions, setAccessControl, addPausable } from '@openzeppelin/wizard';
 
 import {
-  ADDRESS_RE,
-  CONTRACT_NAME_RE,
-  FINDING_IDS,
-  IMPORT_PATHS,
-  SOLIDITY_PRAGMA,
-  type FindingId,
-  type GenerateOptions,
-} from '@/types';
+  LIBS,
+  accessOf,
+  gate,
+  imp,
+  print,
+  throwIfInvalid,
+  validateCommon,
+  validateGatedFeatures,
+  type ValidationMessages,
+} from '@/generator/shared';
+import { FINDING_IDS, IMPORT_PATHS, type FindingId, type GenerateOptions } from '@/types';
 
 /**
  * Aave v3 flash-loan receiver generator.
@@ -28,61 +23,12 @@ import {
  * generator and the audit engine agree on what this code is claimed to survive.
  */
 
-/** Aave's own docs: prefer `flashLoanSimple`, whose premium is 0.05% at launch. */
-const AAVE_LIB = {
-  name: 'Aave v3 Core',
-  path: '@aave/core-v3',
-  version: '^1.19.0',
-};
-
-const imp = (name: string, path: string) => ({ name, path });
-
-/** §5.4 / CVE-2026-48054 — reject, do not sanitize. */
+/** Sweep, claim and pause each send value to a caller-chosen address or halt the contract. */
 function validate(opts: GenerateOptions): void {
-  const messages: Record<string, string> = {};
-
-  if (!CONTRACT_NAME_RE.test(opts.name)) {
-    messages.name = 'Not a valid Solidity identifier';
-  }
-  if (opts.asset !== undefined && !ADDRESS_RE.test(opts.asset)) {
-    messages.asset = 'Not a valid checksummed-length address';
-  }
-  // Sweeping and reward-claiming both send tokens to a caller-chosen address.
-  // Ungated, each is a theft vector, so they cannot coexist with access: 'none'.
-  if (opts.access === 'none' && opts.sweepEscapeHatch) {
-    messages.sweepEscapeHatch = 'Requires access control — an ungated sweep drains the contract';
-  }
-  if (opts.access === 'none' && opts.claimRewards) {
-    messages.claimRewards = 'Requires access control — an ungated claim redirects rewards';
-  }
-  // `addPausable` routes pause()/unpause() through `requireAccessControl` too, so the
-  // same rewrite applies: an ungated pause is a free denial of service.
-  if (opts.access === 'none' && opts.pausable) {
-    messages.pausable = 'Requires access control — an ungated pause is a denial of service';
-  }
-  if (Object.keys(messages).length > 0) {
-    throw new OptionsError(messages);
-  }
-}
-
-const accessOf = (opts: GenerateOptions) => (opts.access === 'none' ? false : opts.access);
-
-/**
- * `requireAccessControl` silently rewrites `false` to `'ownable'`, on the reasonable
- * assumption that a restricted function must be restricted by *something*. That would
- * make `access: 'none'` emit an Ownable contract while the UI claimed otherwise, so
- * we gate the call instead of the argument.
- */
-function gate(
-  c: ContractBuilder,
-  fn: Parameters<typeof requireAccessControl>[1],
-  opts: GenerateOptions,
-  roleIdPrefix: string,
-  roleOwner: string | undefined,
-): void {
-  const access = accessOf(opts);
-  if (access === false) return;
-  requireAccessControl(c, fn, access, roleIdPrefix, roleOwner);
+  const messages: ValidationMessages = {};
+  validateCommon(opts, messages);
+  validateGatedFeatures(opts, messages);
+  throwIfInvalid(messages);
 }
 
 export function buildFlashLoanReceiver(opts: GenerateOptions): {
@@ -121,22 +67,9 @@ export function buildFlashLoanReceiver(opts: GenerateOptions): {
   return { contract: c, appliedFindingIds: applied };
 }
 
-/**
- * Two quirks in `printContract` we have to correct on the way out:
- *   - blank lines inside a function body are emitted with the body's indentation,
- *     leaving trailing whitespace;
- *   - `printNatspecTags` renders `/// ${key} ${value}` verbatim, and `addNatspecTag`
- *     rejects a leading `@` on anything but `@custom:*`. So the `@` has to go back on.
- */
-function polish(source: string): string {
-  return source
-    .replace(/[ \t]+$/gm, '')
-    .replace(/^\/\/\/ (title|notice|dev|author) /gm, '/// @$1 ');
-}
-
 export function printFlashLoanReceiver(opts: GenerateOptions): string {
   const { contract } = buildFlashLoanReceiver(opts);
-  return polish(printContract(contract, { additionalCompatibleLibraries: [AAVE_LIB] }));
+  return print(contract, [LIBS.aave, LIBS.aavePeriphery]);
 }
 
 // ---------------------------------------------------------------------------
@@ -439,5 +372,4 @@ function addOperationalSurface(
     applied.push(FINDING_IDS.VAULT_REWARDS_UNCLAIMABLE);
   }
 
-  void SOLIDITY_PRAGMA;
 }

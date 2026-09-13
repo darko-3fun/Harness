@@ -1,3 +1,10 @@
+> **Historical document.** This is the hackathon build spec, kept as written. The project
+> has since grown past it: six presets in three categories (vaults over Aave, Morpho and
+> Compound; token-sale and bonding-curve launchpads; the flash-loan receiver), a
+> fuzz/invariant property suite next to the attack suite, a mutation-tested audit corpus
+> of 38 findings, and a market catalogue. The current state is described in
+> [README.md](README.md); anything below that contradicts it is out of date.
+
 # HARNESS — Build Specification
 
 > **Read this whole file before writing code.** It is a self-contained handoff spec. You have no

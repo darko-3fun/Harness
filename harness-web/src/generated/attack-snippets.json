@@ -2,7 +2,7 @@
   "schemaVersion": "harness-attack-snippets/v1",
   "_readme": [
     "Consumed by harness-web/src/generator/attacks/assembleAttackTests.ts (Agent A, task A5).",
-    "Owned by Agent B (task B3b). Agent A wrote the two entries below as the \u00a77 fallback",
+    "Owned by Agent B (task B3b). Agent A wrote the two entries below as the §7 fallback",
     "so A5 was not blocked; overwrite them freely, the assembler does not care.",
     "",
     "Keys MUST be finding IDs from contract/types.ts FINDING_IDS. A snippet whose ID is",
@@ -22,11 +22,16 @@
     "{{CONTRACT_TYPE}}": "the generated contract's type name, e.g. `MyFlashLoanReceiver`",
     "{{POOL}}": "IPool, resolved from the addresses provider in setUp",
     "{{ASSET}}": "the underlying ERC20 address constant",
-    "{{ATOKEN}}": "the corresponding aToken address constant",
+    "{{ATOKEN}}": "the aToken for {{ASSET}}, resolved from the Pool in setUp (never hard-coded)",
     "{{PARAMS}}": "call to `_defaultParams()`, which abi.encodes a valid FlashParams",
     "{{PARAMS_STRUCT}}": "call to `_defaultFlashParams()`, the same params unencoded",
     "{{OWNER}}": "the authorised caller created in setUp",
-    "_note": "Snippets may declare `presets`; omitted means both. A snippet is emitted only if its finding ID is in appliedFindingIds AND its preset matches."
+    "_note": "Snippets may declare `presets`; omitted means both. A snippet is emitted only if its finding ID is in appliedFindingIds AND its preset matches.",
+    "{{ONE}}": "10 ** decimals of the asset, resolved on the fork in setUp",
+    "{{AMOUNT}}": "roughly a thousand dollars of the asset in raw units (1_000e6 for USDC, 0.25e18 for WETH); every amount in a snippet is a multiple or fraction of this so the suite is valid for any asset",
+    "{{MORPHO}}": "the Morpho Blue singleton address constant (Morpho preset only)",
+    "{{COMET}}": "the Comet address constant for {{ASSET}} (Compound preset only)",
+    "{{TOKEN}}": "the sale token instance deployed in setUp (token-sale preset only)"
   },
   "snippets": {
     "AAVE-FL-001": {
@@ -47,17 +52,17 @@
         }
       ],
       "comments": [
-        "AAVE-FL-001 \u2014 anyone may call Pool.flashLoanSimple naming OUR contract as the",
+        "AAVE-FL-001 — anyone may call Pool.flashLoanSimple naming OUR contract as the",
         "receiver. Aave then invokes our callback on their behalf, with their params.",
         "Checking msg.sender == Pool is NOT enough: the Pool really is the caller.",
         "This is the bug that drained DODO MarginTrading and Mimo SuperVault."
       ],
       "body": [
-        "address attacker = makeAddr(\"attacker\");",
+        "address attacker = _fresh(\"attacker\");",
         "",
         "vm.prank(attacker);",
         "vm.expectRevert(abi.encodeWithSignature(\"NotSelfInitiated(address)\", attacker));",
-        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, 1_000e6, {{PARAMS}}, 0);"
+        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, {{AMOUNT}}, {{PARAMS}}, 0);"
       ]
     },
     "AAVE-FL-002": {
@@ -73,7 +78,7 @@
         }
       ],
       "comments": [
-        "AAVE-FL-002 \u2014 the tutorial pattern decodes `params` into (address target,",
+        "AAVE-FL-002 — the tutorial pattern decodes `params` into (address target,",
         "bytes data) and calls it, turning finding 001 from a revert into a drain.",
         "Here `params` decodes to a fixed struct with no call target, so hostile bytes",
         "cannot become an external call. Asserted even with both other gates satisfied."
@@ -82,7 +87,7 @@
         "// Worst case: the attacker somehow satisfies the caller AND initiator gates.",
         "vm.prank(address({{POOL}}));",
         "vm.expectRevert();",
-        "{{CONTRACT}}.executeOperation({{ASSET}}, 1_000e6, 5e5, address({{CONTRACT}}), hex\"deadbeef\");"
+        "{{CONTRACT}}.executeOperation({{ASSET}}, {{AMOUNT}}, {{AMOUNT}} / 2000, address({{CONTRACT}}), hex\"deadbeef\");"
       ]
     },
     "AAVE-FL-013": {
@@ -98,18 +103,18 @@
         }
       ],
       "comments": [
-        "AAVE-FL-013 \u2014 a balance sitting on a receiver is repayment for somebody else's",
+        "AAVE-FL-013 — a balance sitting on a receiver is repayment for somebody else's",
         "flash loan. An attacker borrows, does nothing, and lets YOUR balance cover the",
         "premium. The initiator gate is what stops it, so assert the balance survives."
       ],
       "body": [
-        "uint256 idle = 10_000e6;",
+        "uint256 idle = 10 * {{AMOUNT}};",
         "deal({{ASSET}}, address({{CONTRACT}}), idle);",
-        "address attacker = makeAddr(\"attacker\");",
+        "address attacker = _fresh(\"attacker\");",
         "",
         "vm.prank(attacker);",
         "vm.expectRevert();",
-        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, 1_000e6, {{PARAMS}}, 0);",
+        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, {{AMOUNT}}, {{PARAMS}}, 0);",
         "",
         "assertEq(",
         "    IERC20({{ASSET}}).balanceOf(address({{CONTRACT}})),",
@@ -126,16 +131,16 @@
       ],
       "incidents": [
         {
-          "name": "vuln/defi/slippage \u2014 120 tagged PoCs in the registry",
+          "name": "vuln/defi/slippage — 120 tagged PoCs in the registry",
           "url": "https://github.com/sanbir/evm-hack-registry"
         }
       ],
       "comments": [
-        "AAVE-SWP-014 \u2014 a swap leg with no floor on output is a free sandwich. The",
+        "AAVE-SWP-014 — a swap leg with no floor on output is a free sandwich. The",
         "contract refuses to proceed rather than trusting the caller to pass one."
       ],
       "body": [
-        "address router = makeAddr(\"router\");",
+        "address router = _fresh(\"router\");",
         "vm.prank({{OWNER}});",
         "{{CONTRACT}}.setRouterAllowed(router, true);",
         "",
@@ -145,7 +150,7 @@
         "",
         "vm.prank({{OWNER}});",
         "vm.expectRevert(abi.encodeWithSignature(\"MissingSlippageBound()\"));",
-        "{{CONTRACT}}.initiateFlashLoan(1_000e6, p);"
+        "{{CONTRACT}}.initiateFlashLoan({{AMOUNT}}, p);"
       ]
     },
     "AAVE-RISK-010": {
@@ -161,7 +166,7 @@
         }
       ],
       "comments": [
-        "AAVE-RISK-010 \u2014 caps, freezes and pauses make Aave revert mid-flow, and a",
+        "AAVE-RISK-010 — caps, freezes and pauses make Aave revert mid-flow, and a",
         "leverage loop that ignores them bricks. Halting must be a clean revert that",
         "leaves no partial state, and must be reversible."
       ],
@@ -171,7 +176,7 @@
         "",
         "vm.prank({{OWNER}});",
         "vm.expectRevert(abi.encodeWithSignature(\"EnforcedPause()\"));",
-        "{{CONTRACT}}.initiateFlashLoan(1_000e6, {{PARAMS_STRUCT}});",
+        "{{CONTRACT}}.initiateFlashLoan({{AMOUNT}}, {{PARAMS_STRUCT}});",
         "",
         "// No bricked state: unpausing restores normal operation.",
         "vm.prank({{OWNER}});",
@@ -192,14 +197,14 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-009 \u2014 Merkl rewards, airdrops and dust arrive unannounced. Without a",
+        "AAVE-VLT-009 — Merkl rewards, airdrops and dust arrive unannounced. Without a",
         "hatch they are stuck forever; with an ungated one, anyone drains the contract.",
         "Both halves are asserted here."
       ],
       "body": [
-        "uint256 stray = 500e6;",
+        "uint256 stray = {{AMOUNT}} / 2;",
         "deal({{ASSET}}, address({{CONTRACT}}), stray);",
-        "address stranger = makeAddr(\"stranger\");",
+        "address stranger = _fresh(\"stranger\");",
         "",
         "vm.prank(stranger);",
         "vm.expectRevert();",
@@ -223,24 +228,24 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-003 \u2014 aTokens are ordinary transferable ERC20s, so a donation needs",
+        "AAVE-VLT-003 — aTokens are ordinary transferable ERC20s, so a donation needs",
         "no interaction with Aave at all. A vault whose totalAssets() reads the aToken",
         "balance lets anyone move the share price for the next depositor, for free."
       ],
       "body": [
-        "_deposit(alice, 1_000e6);",
-        "uint256 priceBefore = {{CONTRACT}}.convertToAssets(1e6);",
+        "_deposit(alice, {{AMOUNT}});",
+        "uint256 priceBefore = {{CONTRACT}}.convertToAssets({{ONE}});",
         "",
         "// Mint real aTokens, then hand them straight to the vault.",
-        "address whale = makeAddr(\"whale\");",
-        "deal({{ASSET}}, whale, 500_000e6);",
+        "address whale = _fresh(\"whale\");",
+        "deal({{ASSET}}, whale, 500 * {{AMOUNT}});",
         "vm.startPrank(whale);",
-        "IERC20({{ASSET}}).approve(address({{POOL}}), 500_000e6);",
-        "{{POOL}}.supply({{ASSET}}, 500_000e6, whale, 0);",
+        "IERC20({{ASSET}}).approve(address({{POOL}}), 500 * {{AMOUNT}});",
+        "{{POOL}}.supply({{ASSET}}, 500 * {{AMOUNT}}, whale, 0);",
         "IERC20({{ATOKEN}}).transfer(address({{CONTRACT}}), IERC20({{ATOKEN}}).balanceOf(whale));",
         "vm.stopPrank();",
         "",
-        "assertEq({{CONTRACT}}.convertToAssets(1e6), priceBefore, \"share price moved on a free donation\");"
+        "assertEq({{CONTRACT}}.convertToAssets({{ONE}}), priceBefore, \"share price moved on a free donation\");"
       ]
     },
     "AAVE-VLT-004": {
@@ -256,18 +261,18 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-004 \u2014 Aave's withdraw returns the amount ACTUALLY withdrawn, which is",
+        "AAVE-VLT-004 — Aave's withdraw returns the amount ACTUALLY withdrawn, which is",
         "less than requested when the reserve is illiquid, capped, frozen or paused.",
         "Crediting the requested amount instead silently mints value out of nothing."
       ],
       "body": [
-        "_deposit(alice, 1_000e6);",
+        "_deposit(alice, {{AMOUNT}});",
         "uint256 before = IERC20({{ASSET}}).balanceOf(alice);",
         "",
         "vm.prank(alice);",
-        "{{CONTRACT}}.withdraw(500e6, alice, alice);",
+        "{{CONTRACT}}.withdraw({{AMOUNT}} / 2, alice, alice);",
         "",
-        "assertEq(IERC20({{ASSET}}).balanceOf(alice) - before, 500e6, \"credited amount != amount Aave returned\");"
+        "assertEq(IERC20({{ASSET}}).balanceOf(alice) - before, {{AMOUNT}} / 2, \"credited amount != amount Aave returned\");"
       ]
     },
     "AAVE-VLT-011": {
@@ -283,11 +288,11 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-011 \u2014 redeem(shares, receiver, owner) burns from `owner` and pays",
+        "AAVE-VLT-011 — redeem(shares, receiver, owner) burns from `owner` and pays",
         "`receiver`. Mixing the two burns Alice's shares and pays Bob, or worse."
       ],
       "body": [
-        "uint256 shares = _deposit(alice, 1_000e6);",
+        "uint256 shares = _deposit(alice, {{AMOUNT}});",
         "",
         "// Alice redeems her own shares but directs the assets to Bob.",
         "vm.prank(alice);",
@@ -311,11 +316,11 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-009 \u2014 a vault needs a hatch for airdrops, but a hatch that can reach",
+        "AAVE-VLT-009 — a vault needs a hatch for airdrops, but a hatch that can reach",
         "the principal or its aToken is not a hatch, it is the vulnerability."
       ],
       "body": [
-        "_deposit(alice, 1_000e6);",
+        "_deposit(alice, {{AMOUNT}});",
         "",
         "vm.prank({{OWNER}});",
         "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", {{ASSET}}));",
@@ -339,7 +344,7 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-008 \u2014 Aave base yield is not incentives. Without a claim path the",
+        "AAVE-VLT-008 — Aave base yield is not incentives. Without a claim path the",
         "emissions are lost; with an ungated one, anyone redirects them."
       ],
       "body": [
@@ -369,18 +374,22 @@
         }
       ],
       "comments": [
-        "AAVE-RISK-010 \u2014 caps, freezes and pauses make Aave revert mid-flow. Halting",
-        "must be clean and reversible, leaving no partial state behind."
+        "AAVE-RISK-010 — caps, freezes and pauses make Aave revert mid-flow. Halting",
+        "must be clean and reversible, leaving no partial state behind.",
+        "The vault's ERC-4626 limits report the pause too: maxDeposit() is zero while paused."
       ],
       "body": [
         "vm.prank({{OWNER}});",
         "{{CONTRACT}}.pause();",
         "",
-        "deal({{ASSET}}, alice, 1_000e6);",
+        "deal({{ASSET}}, alice, {{AMOUNT}});",
         "vm.startPrank(alice);",
-        "IERC20({{ASSET}}).approve(address({{CONTRACT}}), 1_000e6);",
-        "vm.expectRevert(abi.encodeWithSignature(\"EnforcedPause()\"));",
-        "{{CONTRACT}}.deposit(1_000e6, alice);",
+        "IERC20({{ASSET}}).approve(address({{CONTRACT}}), {{AMOUNT}});",
+        "// The limit reports the pause before the call can revert (EIP-4626: maxDeposit MUST",
+        "// return 0 when deposits are disabled), so the revert is the limit's, not the guard's.",
+        "assertEq({{CONTRACT}}.maxDeposit(alice), 0, \"maxDeposit lies while paused\");",
+        "vm.expectRevert(abi.encodeWithSignature(\"ERC4626ExceededMaxDeposit(address,uint256,uint256)\", alice, {{AMOUNT}}, 0));",
+        "{{CONTRACT}}.deposit({{AMOUNT}}, alice);",
         "vm.stopPrank();",
         "",
         "vm.prank({{OWNER}});",
@@ -396,29 +405,29 @@
       ],
       "incidents": [
         {
-          "name": "StErMi \u2014 Aave v3 LTV-0 bug bounty",
+          "name": "StErMi — Aave v3 LTV-0 bug bounty",
           "url": "https://immunefi.com/bug-bounty/aave/"
         },
         {
-          "name": "ChainSecurity \u2014 Grove ALM zero-LTV review",
+          "name": "ChainSecurity — Grove ALM zero-LTV review",
           "url": "https://chainsecurity.com/audits/"
         }
       ],
       "comments": [
-        "AAVE-RISK-006 \u2014 one wei of a zero-LTV aToken, sent by anyone, must not brick",
+        "AAVE-RISK-006 — one wei of a zero-LTV aToken, sent by anyone, must not brick",
         "redemptions. aTokens are ordinary transferable ERC20s, so this grief costs the",
         "attacker a single wei and there is no permissionless way to push it back out.",
         "The aTokens are acquired by genuinely supplying to Aave: aToken balances are",
         "scaled, so a forged `deal` balance would not behave like a real transfer."
       ],
       "body": [
-        "uint256 shares = _deposit(alice, 100_000e6);",
+        "uint256 shares = _deposit(alice, 100 * {{AMOUNT}});",
         "",
-        "address griefer = makeAddr(\"griefer\");",
-        "deal({{ASSET}}, griefer, 1_000e6);",
+        "address griefer = _fresh(\"griefer\");",
+        "deal({{ASSET}}, griefer, {{AMOUNT}});",
         "vm.startPrank(griefer);",
-        "IERC20({{ASSET}}).approve(address({{POOL}}), 1_000e6);",
-        "{{POOL}}.supply({{ASSET}}, 1_000e6, griefer, 0);",
+        "IERC20({{ASSET}}).approve(address({{POOL}}), {{AMOUNT}});",
+        "{{POOL}}.supply({{ASSET}}, {{AMOUNT}}, griefer, 0);",
         "IERC20({{ATOKEN}}).transfer(address({{CONTRACT}}), 1);",
         "vm.stopPrank();",
         "",
@@ -435,28 +444,28 @@
       ],
       "incidents": [
         {
-          "name": "StErMi \u2014 Aave v3 LTV-0 bug bounty",
+          "name": "StErMi — Aave v3 LTV-0 bug bounty",
           "url": "https://immunefi.com/bug-bounty/aave/"
         }
       ],
       "comments": [
-        "AAVE-RISK-006 \u2014 anyone can push a zero-LTV aToken onto this contract. It must",
+        "AAVE-RISK-006 — anyone can push a zero-LTV aToken onto this contract. It must",
         "stay inert: the callback gates keep holding and the dust cannot be leveraged",
         "by whoever sent it."
       ],
       "body": [
-        "address griefer = makeAddr(\"griefer\");",
-        "deal({{ASSET}}, griefer, 1_000e6);",
+        "address griefer = _fresh(\"griefer\");",
+        "deal({{ASSET}}, griefer, {{AMOUNT}});",
         "vm.startPrank(griefer);",
-        "IERC20({{ASSET}}).approve(address({{POOL}}), 1_000e6);",
-        "{{POOL}}.supply({{ASSET}}, 1_000e6, griefer, 0);",
+        "IERC20({{ASSET}}).approve(address({{POOL}}), {{AMOUNT}});",
+        "{{POOL}}.supply({{ASSET}}, {{AMOUNT}}, griefer, 0);",
         "IERC20({{ATOKEN}}).transfer(address({{CONTRACT}}), 1);",
         "vm.stopPrank();",
         "",
         "// The dust must not become a lever for a third-party flash loan.",
         "vm.prank(griefer);",
         "vm.expectRevert();",
-        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, 1_000e6, {{PARAMS}}, 0);",
+        "{{POOL}}.flashLoanSimple(address({{CONTRACT}}), {{ASSET}}, {{AMOUNT}}, {{PARAMS}}, 0);",
         "",
         "assertEq(",
         "    IERC20({{ATOKEN}}).balanceOf(address({{CONTRACT}})),",
@@ -478,25 +487,25 @@
         }
       ],
       "comments": [
-        "MRPH-VLT-016 \u2014 supply and withdraw take BOTH an assets and a shares argument,",
+        "MRPH-VLT-016 — supply and withdraw take BOTH an assets and a shares argument,",
         "and exactly one must be zero. Setting both is not a rounding nuisance, it is a",
         "hard revert: \"inconsistent input\". The vault names the zero rather than",
         "passing a bare literal, so the intent is visible at every call site."
       ],
       "body": [
         "// The vault's own supply path is well-formed: a deposit lands.",
-        "_deposit(alice, 1_000e6);",
+        "_deposit(alice, {{AMOUNT}});",
         "assertGt({{CONTRACT}}.totalAssets(), 0, \"supply reverted or credited nothing\");",
         "",
         "// And this is what the malformed call does, straight to Morpho.",
-        "// marketParams() is itself a call, so it must be hoisted above expectRevert \u2014",
+        "// marketParams() is itself a call, so it must be hoisted above expectRevert —",
         "// otherwise the expectation binds to it instead of to supply().",
         "MarketParams memory mp = {{CONTRACT}}.marketParams();",
-        "deal({{ASSET}}, address(this), 2e6);",
+        "deal({{ASSET}}, address(this), 2 * {{ONE}});",
         "IERC20({{ASSET}}).approve({{MORPHO}}, type(uint256).max);",
         "",
         "vm.expectRevert(bytes(\"inconsistent input\"));",
-        "IMorpho({{MORPHO}}).supply(mp, 1e6, 1e6, address(this), \"\");"
+        "IMorpho({{MORPHO}}).supply(mp, {{ONE}}, {{ONE}}, address(this), \"\");"
       ]
     },
     "MRPH-CB-017": {
@@ -517,7 +526,7 @@
         }
       ],
       "comments": [
-        "MRPH-CB-017 \u2014 passing non-empty `data` to Morpho makes it call back into",
+        "MRPH-CB-017 — passing non-empty `data` to Morpho makes it call back into",
         "this contract. An ungated callback is the same Critical that drained DODO on",
         "Aave. The vault passes empty bytes and implements no callback at all, so",
         "there is no entry point to gate and nothing to get wrong."
@@ -543,12 +552,12 @@
       ],
       "incidents": [
         {
-          "name": "Morpho Blue MarketParamsLib \u2014 a market IS the hash of its parameters",
+          "name": "Morpho Blue MarketParamsLib — a market IS the hash of its parameters",
           "url": "https://docs.morpho.org/"
         }
       ],
       "comments": [
-        "MRPH-MKT-018 \u2014 Morpho identifies a market by the hash of five fields. A vault",
+        "MRPH-MKT-018 — Morpho identifies a market by the hash of five fields. A vault",
         "that accepts them per call can be aimed at a market with a different oracle or",
         "LLTV while every function signature stays identical. Pinning them as",
         "immutables means the market cannot be repointed after deployment."
@@ -582,18 +591,18 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-004 \u2014 Morpho's withdraw returns what it ACTUALLY paid out, which is",
+        "AAVE-VLT-004 — Morpho's withdraw returns what it ACTUALLY paid out, which is",
         "short when the market is fully borrowed. Crediting the requested figure instead",
         "mints value that was never received, and the last exiter discovers it."
       ],
       "body": [
-        "_deposit(alice, 1_000e6);",
+        "_deposit(alice, {{AMOUNT}});",
         "uint256 before = IERC20({{ASSET}}).balanceOf(alice);",
         "",
         "vm.prank(alice);",
-        "{{CONTRACT}}.withdraw(500e6, alice, alice);",
+        "{{CONTRACT}}.withdraw({{AMOUNT}} / 2, alice, alice);",
         "",
-        "assertEq(IERC20({{ASSET}}).balanceOf(alice) - before, 500e6, \"credited amount != amount Morpho returned\");"
+        "assertEq(IERC20({{ASSET}}).balanceOf(alice) - before, {{AMOUNT}} / 2, \"credited amount != amount Morpho returned\");"
       ]
     },
     "AAVE-VLT-011#morpho": {
@@ -609,11 +618,11 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-011 \u2014 redeem(shares, receiver, owner) burns from `owner` and pays",
+        "AAVE-VLT-011 — redeem(shares, receiver, owner) burns from `owner` and pays",
         "`receiver`. Mixing them burns Alice's shares and pays Bob."
       ],
       "body": [
-        "uint256 shares = _deposit(alice, 1_000e6);",
+        "uint256 shares = _deposit(alice, {{AMOUNT}});",
         "",
         "vm.prank(alice);",
         "{{CONTRACT}}.redeem(shares, bob, alice);",
@@ -636,11 +645,11 @@
         }
       ],
       "comments": [
-        "AAVE-VLT-009 \u2014 a hatch that can reach the principal is not a hatch, it is the",
+        "AAVE-VLT-009 — a hatch that can reach the principal is not a hatch, it is the",
         "vulnerability."
       ],
       "body": [
-        "_deposit(alice, 1_000e6);",
+        "_deposit(alice, {{AMOUNT}});",
         "",
         "vm.prank({{OWNER}});",
         "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", {{ASSET}}));",
@@ -660,22 +669,1012 @@
         }
       ],
       "comments": [
-        "AAVE-RISK-010 \u2014 halting must be clean and reversible, leaving no partial state."
+        "AAVE-RISK-010 — halting must be clean and reversible, leaving no partial state.",
+        "The vault's ERC-4626 limits report the pause too: maxDeposit() is zero while paused."
       ],
       "body": [
         "vm.prank({{OWNER}});",
         "{{CONTRACT}}.pause();",
         "",
-        "deal({{ASSET}}, alice, 1_000e6);",
+        "deal({{ASSET}}, alice, {{AMOUNT}});",
         "vm.startPrank(alice);",
-        "IERC20({{ASSET}}).approve(address({{CONTRACT}}), 1_000e6);",
-        "vm.expectRevert(abi.encodeWithSignature(\"EnforcedPause()\"));",
-        "{{CONTRACT}}.deposit(1_000e6, alice);",
+        "IERC20({{ASSET}}).approve(address({{CONTRACT}}), {{AMOUNT}});",
+        "// The limit reports the pause before the call can revert (EIP-4626: maxDeposit MUST",
+        "// return 0 when deposits are disabled), so the revert is the limit's, not the guard's.",
+        "assertEq({{CONTRACT}}.maxDeposit(alice), 0, \"maxDeposit lies while paused\");",
+        "vm.expectRevert(abi.encodeWithSignature(\"ERC4626ExceededMaxDeposit(address,uint256,uint256)\", alice, {{AMOUNT}}, 0));",
+        "{{CONTRACT}}.deposit({{AMOUNT}}, alice);",
         "vm.stopPrank();",
         "",
         "vm.prank({{OWNER}});",
         "{{CONTRACT}}.unpause();",
         "assertEq({{CONTRACT}}.totalAssets(), 0, \"paused deposit left partial state\");"
+      ]
+    },
+    "CMPD-VLT-019": {
+      "testName": "test_WithdrawCannotOpenBorrow",
+      "title": "Comet withdraw beyond the supplied balance opens a borrow",
+      "presets": [
+        "compound-v3-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Comet withdrawBase: no amount <= balance check; NotCollateralized is the only guard",
+          "url": "https://github.com/compound-finance/comet/blob/main/contracts/CometWithExtendedAssetList.sol"
+        },
+        {
+          "name": "ChainSecurity Comet audit §5.1 — balances can go negative through the same path",
+          "url": "https://reports.chainsecurity.com/Compound/ChainSecurity_Compound_Comet_Audit.pdf"
+        }
+      ],
+      "comments": [
+        "CMPD-VLT-019 — Comet.withdraw() has no \"amount <= balance\" check: past the supplied",
+        "balance it BORROWS, and it can, because supplyTo() lets anyone hand this vault a",
+        "collateral position without asking. The vault's limits and its withdraw gate must",
+        "hold even when its own book is wrong, so the book is corrupted on purpose here."
+      ],
+      "body": [
+        "_deposit(alice, {{AMOUNT}});",
+        "",
+        "// Anyone can gift the vault collateral on Comet. No permission is needed for `dst`.",
+        "address griefer = _fresh(\"griefer\");",
+        "deal(WBTC, griefer, 1e8);",
+        "vm.startPrank(griefer);",
+        "IERC20(WBTC).approve({{COMET}}, 1e8);",
+        "ICometTest({{COMET}}).supplyTo(address({{CONTRACT}}), WBTC, 1e8);",
+        "vm.stopPrank();",
+        "",
+        "// Corrupt the book: the vault now believes it holds 100x its real position.",
+        "stdstore.target(address({{CONTRACT}})).sig(\"totalAssets()\").checked_write(100 * {{AMOUNT}});",
+        "",
+        "// The limit still reports the real position, not the book.",
+        "uint256 real = ICometTest({{COMET}}).balanceOf(address({{CONTRACT}}));",
+        "assertLe({{CONTRACT}}.maxWithdraw(alice), real, \"maxWithdraw promised more than Comet holds\");",
+        "",
+        "// One wei past the position is refused; Comet would have borrowed it.",
+        "vm.prank(alice);",
+        "vm.expectRevert();",
+        "{{CONTRACT}}.withdraw(real + 1, alice, alice);",
+        "",
+        "uint256 allowed = {{CONTRACT}}.maxWithdraw(alice);",
+        "vm.prank(alice);",
+        "{{CONTRACT}}.withdraw(allowed, alice, alice);",
+        "assertEq(ICometTest({{COMET}}).borrowBalanceOf(address({{CONTRACT}})), 0, \"vault opened a borrow\");"
+      ]
+    },
+    "CMPD-VLT-020": {
+      "testName": "test_DepositCreditsMeasuredPosition",
+      "title": "Comet present-value rounding booked as the requested amount",
+      "presets": [
+        "compound-v3-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Code4rena 2023-07 Reserve M-13 — Comet moves 1-10 wei more than asked",
+          "url": "https://code4rena.com/reports/2023-07-reserve"
+        }
+      ],
+      "comments": [
+        "CMPD-VLT-020 — Comet stores a principal and shows a present value; both conversions",
+        "round DOWN, so the balance after supplying X can be short of X by a base unit. A",
+        "vault that books X drifts above its real position and the last exit fails inside",
+        "Comet. Assert the book never exceeds the position and a full exit still works."
+      ],
+      "body": [
+        "_deposit(alice, {{AMOUNT}});",
+        "uint256 held = ICometTest({{COMET}}).balanceOf(address({{CONTRACT}}));",
+        "assertLe({{CONTRACT}}.totalAssets(), held, \"book exceeds the Comet position\");",
+        "assertGe({{CONTRACT}}.totalAssets() + 2, {{AMOUNT}}, \"credited far less than was supplied\");",
+        "",
+        "// The last redeemer must be able to leave without underflowing inside Comet.",
+        "uint256 shares = {{CONTRACT}}.balanceOf(alice);",
+        "vm.prank(alice);",
+        "{{CONTRACT}}.redeem(shares, alice, alice);",
+        "assertLt({{CONTRACT}}.totalAssets(), {{AMOUNT}} / 1_000, \"dust left after a full exit\");",
+        "assertLe({{CONTRACT}}.totalAssets(), ICometTest({{COMET}}).balanceOf(address({{CONTRACT}})));"
+      ]
+    },
+    "CMPD-VLT-021": {
+      "testName": "test_RewardsClaimIsGatedAndReachesRecipient",
+      "title": "COMP rewards unclaimable (CometRewards.claim never called by the supplier)",
+      "presets": [
+        "compound-v3-vault"
+      ],
+      "incidents": [
+        {
+          "name": "CometRewards.claimTo requires hasPermission(src, msg.sender)",
+          "url": "https://github.com/compound-finance/comet/blob/main/contracts/CometRewards.sol"
+        },
+        {
+          "name": "Compound III rewards docs",
+          "url": "https://docs.compound.finance/protocol-rewards/"
+        }
+      ],
+      "comments": [
+        "CMPD-VLT-021 — COMP accrues to the Comet account, which is the vault, and can only",
+        "be claimed to a third party by the account itself. Without a claim path the rewards",
+        "are stranded; with an ungated one, anyone redirects them."
+      ],
+      "body": [
+        "_deposit(alice, {{AMOUNT}});",
+        "",
+        "vm.prank(alice);",
+        "vm.expectRevert();",
+        "{{CONTRACT}}.claimRewards(alice);",
+        "",
+        "// Nothing may be owed at this block. What is asserted is that a claim path exists,",
+        "// that only the operator can drive it, and that CometRewards accepts the vault as",
+        "// the claiming account.",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.claimRewards({{OWNER}});"
+      ]
+    },
+    "AAVE-VLT-003#compound": {
+      "testName": "test_ResistsCometDonation",
+      "title": "Donatable balance used as share-price denominator",
+      "presets": [
+        "compound-v3-vault"
+      ],
+      "incidents": [
+        {
+          "name": "PoolTogether AaveV3YieldSource (Code4rena H-01) — same shape, aTokens",
+          "url": "https://code4rena.com/reports/2022-06-poolTogether"
+        },
+        {
+          "name": "ERC-4626 vault share rounding PoC",
+          "url": "https://github.com/sanbir/evm-hack-registry/tree/main/2026-04-ThetanutsVaultShareRounding_exp",
+          "pocFolder": "2026-04-ThetanutsVaultShareRounding_exp"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-003 — Comet's supplyTo() lets anyone add to this vault's position with no",
+        "vault interaction at all. A vault whose totalAssets() reads COMET.balanceOf(this)",
+        "lets anyone move the share price for the next depositor, for free."
+      ],
+      "body": [
+        "_deposit(alice, {{AMOUNT}});",
+        "uint256 priceBefore = {{CONTRACT}}.convertToAssets({{ONE}});",
+        "",
+        "address whale = _fresh(\"whale\");",
+        "deal({{ASSET}}, whale, 500 * {{AMOUNT}});",
+        "vm.startPrank(whale);",
+        "IERC20({{ASSET}}).approve({{COMET}}, 500 * {{AMOUNT}});",
+        "ICometTest({{COMET}}).supplyTo(address({{CONTRACT}}), {{ASSET}}, 500 * {{AMOUNT}});",
+        "vm.stopPrank();",
+        "",
+        "assertEq({{CONTRACT}}.convertToAssets({{ONE}}), priceBefore, \"share price moved on a free donation\");"
+      ]
+    },
+    "AAVE-VLT-004#compound": {
+      "testName": "test_WithdrawAccountsActualAmount",
+      "title": "Lending-market withdraw return value ignored",
+      "presets": [
+        "compound-v3-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Connext Amarok (Code4rena M-15)",
+          "url": "https://code4rena.com/reports/2022-06-connext"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-004 — Comet's withdraw returns nothing at all, so the amount received has",
+        "to be measured. Crediting the requested figure instead silently mints value."
+      ],
+      "body": [
+        "_deposit(alice, {{AMOUNT}});",
+        "uint256 before = IERC20({{ASSET}}).balanceOf(alice);",
+        "",
+        "vm.prank(alice);",
+        "{{CONTRACT}}.withdraw({{AMOUNT}} / 2, alice, alice);",
+        "",
+        "assertEq(IERC20({{ASSET}}).balanceOf(alice) - before, {{AMOUNT}} / 2, \"credited amount != amount Comet paid\");"
+      ]
+    },
+    "AAVE-VLT-011#compound": {
+      "testName": "test_ReceiverOwnerNotConflated",
+      "title": "ERC-4626 receiver and owner conflated",
+      "presets": [
+        "compound-v3-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Taichi ERC-4626 series, Pt.5",
+          "url": "https://docs.openzeppelin.com/contracts/5.x/erc4626"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-011 — redeem(shares, receiver, owner) burns from `owner` and pays",
+        "`receiver`. Mixing them burns Alice's shares and pays Bob."
+      ],
+      "body": [
+        "uint256 shares = _deposit(alice, {{AMOUNT}});",
+        "",
+        "vm.prank(alice);",
+        "{{CONTRACT}}.redeem(shares, bob, alice);",
+        "",
+        "assertEq({{CONTRACT}}.balanceOf(alice), 0, \"owner's shares were not burned\");",
+        "assertGt(IERC20({{ASSET}}).balanceOf(bob), 0, \"receiver was not paid\");",
+        "assertEq(IERC20({{ASSET}}).balanceOf(alice), 0, \"assets went to the owner, not the receiver\");"
+      ]
+    },
+    "AAVE-VLT-009#compound": {
+      "testName": "test_SweepCannotTouchPrincipal",
+      "title": "No ERC20 escape hatch for airdrops / stuck tokens",
+      "presets": [
+        "compound-v3-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Morpho integration checklist",
+          "url": "https://docs.morpho.org/overview/resources/audits/"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-009 — a hatch that can reach the principal, or the Comet itself (whose",
+        "transfer() moves the supplied balance), is not a hatch, it is the vulnerability."
+      ],
+      "body": [
+        "_deposit(alice, {{AMOUNT}});",
+        "",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", {{ASSET}}));",
+        "{{CONTRACT}}.sweep({{ASSET}}, {{OWNER}});",
+        "",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", {{COMET}}));",
+        "{{CONTRACT}}.sweep({{COMET}}, {{OWNER}});"
+      ]
+    },
+    "AAVE-RISK-010#compound": {
+      "testName": "test_PausedDepositRevertsCleanly",
+      "title": "Supply/borrow cap and pause reverts unhandled",
+      "presets": [
+        "compound-v3-vault"
+      ],
+      "incidents": [
+        {
+          "name": "Sherlock Index #267",
+          "url": "https://github.com/sherlock-audit/2023-01-index-judging/issues/267"
+        },
+        {
+          "name": "Comet pause guardian — supplyInternal reverts Paused()",
+          "url": "https://github.com/compound-finance/comet/blob/main/contracts/CometWithExtendedAssetList.sol"
+        }
+      ],
+      "comments": [
+        "AAVE-RISK-010 — halting must be clean and reversible, and when Comet's own guardian",
+        "pauses supply the vault's limit must say so before anything reverts.",
+        "The vault's ERC-4626 limits report the pause too: maxDeposit() is zero while paused."
+      ],
+      "body": [
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.pause();",
+        "",
+        "deal({{ASSET}}, alice, {{AMOUNT}});",
+        "vm.startPrank(alice);",
+        "IERC20({{ASSET}}).approve(address({{CONTRACT}}), {{AMOUNT}});",
+        "// The limit reports the pause before the call can revert (EIP-4626: maxDeposit MUST",
+        "// return 0 when deposits are disabled), so the revert is the limit's, not the guard's.",
+        "assertEq({{CONTRACT}}.maxDeposit(alice), 0, \"maxDeposit lies while paused\");",
+        "vm.expectRevert(abi.encodeWithSignature(\"ERC4626ExceededMaxDeposit(address,uint256,uint256)\", alice, {{AMOUNT}}, 0));",
+        "{{CONTRACT}}.deposit({{AMOUNT}}, alice);",
+        "vm.stopPrank();",
+        "",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.unpause();",
+        "assertEq({{CONTRACT}}.totalAssets(), 0, \"paused deposit left partial state\");",
+        "",
+        "// Comet's guardian pauses supply: the ERC-4626 limit reports it honestly.",
+        "vm.prank(ICometTest({{COMET}}).pauseGuardian());",
+        "ICometTest({{COMET}}).pause(true, false, false, false, false);",
+        "assertEq({{CONTRACT}}.maxDeposit(alice), 0, \"maxDeposit lies while Comet supply is paused\");"
+      ]
+    },
+    "LPAD-SALE-030": {
+      "testName": "test_RaisedFundsLockedUntilFinalize",
+      "title": "Raised funds withdrawable before the sale is finalized",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "BetaPresale (May 2025) — mutable recipient + instant forwarding, drained via a flash loan",
+          "url": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2025-05/BetaPresale_exp.sol",
+          "pocFolder": "2025-05-BetaPresale_exp"
+        },
+        {
+          "name": "PartyDAO (Code4rena 2023-04, H-03) — refunds insolvent after funds moved",
+          "url": "https://code4rena.com/reports/2023-04-party"
+        }
+      ],
+      "comments": [
+        "LPAD-SALE-030 — nothing leaves the sale before finalize() has run and succeeded, and",
+        "then only to the immutable treasury. There is no recipient setter to hijack and no",
+        "path for the owner to take the money early."
+      ],
+      "body": [
+        "_openSale();",
+        "uint256 c = _validContribution();",
+        "_contribute(alice, c);",
+        "",
+        "vm.expectRevert(abi.encodeWithSignature(\"NotFinalized()\"));",
+        "{{CONTRACT}}.withdrawRaised();",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"NotFinalized()\"));",
+        "{{CONTRACT}}.withdrawRaised();",
+        "assertEq(address({{CONTRACT}}).balance, c, \"ETH left the sale before it closed\");",
+        "",
+        "_raiseTo({{CONTRACT}}.SOFT_CAP_WEI());",
+        "_closeSale();",
+        "{{CONTRACT}}.finalize();",
+        "assertTrue({{CONTRACT}}.succeeded(), \"soft cap met but sale did not succeed\");",
+        "",
+        "uint256 raised = address({{CONTRACT}}).balance;",
+        "uint256 treasuryBefore = {{CONTRACT}}.TREASURY().balance;",
+        "{{CONTRACT}}.withdrawRaised();",
+        "assertEq({{CONTRACT}}.TREASURY().balance - treasuryBefore, raised, \"raise did not reach the treasury\");",
+        "assertEq(address({{CONTRACT}}).balance, 0);"
+      ]
+    },
+    "LPAD-SALE-031": {
+      "testName": "test_ClaimOnlyAfterFinalizeAndOnce",
+      "title": "Tokens claimable before finalization, or claimable twice",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "AISOTH Presale (June 2026) — buy and claim in one transaction, dump into the pool",
+          "url": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2026-06/AISOTHPresale_exp.sol",
+          "pocFolder": "2026-06-AISOTHPresale_exp"
+        },
+        {
+          "name": "vVv Launchpad (Sherlock H-1) — claim not bound to the claimant",
+          "url": "https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2024.11.17%20-%20Final%20-%20vVv%20Launchpad%20-%20Investments%20%26%20Token%20distribution%20Audit%20Report.pdf"
+        }
+      ],
+      "comments": [
+        "LPAD-SALE-031 — a claim before the sale has closed is a flash-arbitrage against the",
+        "pool; a claim that does not track what was already paid is a double claim."
+      ],
+      "body": [
+        "_openSale();",
+        "_raiseTo({{CONTRACT}}.SOFT_CAP_WEI());",
+        "",
+        "vm.prank(alice);",
+        "vm.expectRevert(abi.encodeWithSignature(\"NotFinalized()\"));",
+        "{{CONTRACT}}.claim();",
+        "",
+        "_closeSale();",
+        "{{CONTRACT}}.finalize();",
+        "vm.warp(block.timestamp + {{CONTRACT}}.VESTING_CLIFF() + {{CONTRACT}}.VESTING_DURATION());",
+        "",
+        "vm.prank(alice);",
+        "uint256 got = {{CONTRACT}}.claim();",
+        "assertEq(got, {{CONTRACT}}.allocationOf(alice), \"claim paid less than the allocation\");",
+        "assertEq({{TOKEN}}.balanceOf(alice), got);",
+        "",
+        "vm.prank(alice);",
+        "vm.expectRevert(abi.encodeWithSignature(\"NothingToClaim()\"));",
+        "{{CONTRACT}}.claim();"
+      ]
+    },
+    "LPAD-SALE-032": {
+      "testName": "test_RefundIsPullBasedAndReentrancySafe",
+      "title": "Push-based refunds / reentrancy in claim and refund",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "OpenZeppelin 2.x RefundableCrowdsale — escrowed, pull-based refunds",
+          "url": "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v2.5.1/contracts/crowdsale/distribution/RefundableCrowdsale.sol"
+        },
+        {
+          "name": "Decent Crescendo (Feb 2026) — ETH paid out before state was updated",
+          "url": "https://www.darknavy.org/web3/exploits/erc1155-bonding-curve-reentrancy/"
+        }
+      ],
+      "comments": [
+        "LPAD-SALE-032 — a refund is pulled by its owner, never pushed in a loop, and the",
+        "balance is zeroed before the ETH moves. A receive() that calls back in gets nothing."
+      ],
+      "body": [
+        "_openSale();",
+        "uint256 c = _validContribution();",
+        "vm.deal(address(this), c);",
+        "reenterer.contribute{value: c}(_proofFor(address(reenterer)));",
+        "",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.cancel();",
+        "",
+        "reenterer.refund();",
+        "assertEq(address(reenterer).balance, c, \"refunded more or less than was contributed\");",
+        "assertEq(reenterer.reentered(), 0, \"refund() was re-enterable\");",
+        "",
+        "vm.expectRevert(bytes(\"refund failed\")); // the sale said NothingToRefund; the wrapper reports it",
+        "reenterer.refund();"
+      ]
+    },
+    "LPAD-SALE-033": {
+      "testName": "test_CapsEnforced",
+      "title": "Hard cap or per-wallet cap not enforced",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "BetaPresale (May 2025) — per-sender cap recycled through 70 fresh contracts",
+          "url": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2025-05/BetaPresale_exp.sol",
+          "pocFolder": "2025-05-BetaPresale_exp"
+        },
+        {
+          "name": "PartyDAO (Code4rena 2022-09, M-02) — per-wallet caps are sybil-able",
+          "url": "https://code4rena.com/reports/2022-09-party"
+        }
+      ],
+      "comments": [
+        "LPAD-SALE-033 — every cap is checked on every contribution. The per-wallet cap is",
+        "friction rather than security (a second wallet is free); the hard cap is not."
+      ],
+      "body": [
+        "_openSale();",
+        "uint256 minWei = {{CONTRACT}}.MIN_CONTRIBUTION_WEI();",
+        "uint256 maxWei = {{CONTRACT}}.MAX_CONTRIBUTION_WEI();",
+        "",
+        "if (minWei > 1) {",
+        "    vm.deal(alice, minWei);",
+        "    vm.prank(alice);",
+        "    vm.expectRevert(abi.encodeWithSignature(\"ContributionTooSmall(uint256)\", minWei));",
+        "    {{CONTRACT}}.contribute{value: minWei - 1}(_proofFor(alice));",
+        "}",
+        "if (maxWei != 0) {",
+        "    vm.deal(alice, maxWei + 1);",
+        "    vm.prank(alice);",
+        "    vm.expectRevert(abi.encodeWithSignature(\"ContributionTooLarge(uint256)\", maxWei));",
+        "    {{CONTRACT}}.contribute{value: maxWei + 1}(_proofFor(alice));",
+        "}",
+        "",
+        "// Fill the hard cap, then one more valid contribution is refused.",
+        "_raiseTo({{CONTRACT}}.HARD_CAP_WEI());",
+        "assertEq({{CONTRACT}}.totalRaised(), {{CONTRACT}}.HARD_CAP_WEI());",
+        "address late = _wallet(31);",
+        "uint256 c = _validContribution();",
+        "vm.deal(late, c);",
+        "vm.prank(late);",
+        "vm.expectRevert(abi.encodeWithSignature(\"HardCapExceeded(uint256)\", uint256(0)));",
+        "{{CONTRACT}}.contribute{value: c}(_proofFor(late));"
+      ]
+    },
+    "LPAD-SALE-034": {
+      "testName": "test_WhitelistProofBoundToSender",
+      "title": "Whitelist proof not bound to this sale (replayable)",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "vVv Launchpad (Sherlock H-1) — signed claim front-run by a stranger",
+          "url": "https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2024.11.17%20-%20Final%20-%20vVv%20Launchpad%20-%20Investments%20%26%20Token%20distribution%20Audit%20Report.pdf"
+        },
+        {
+          "name": "Rova (Sherlock #421) — message without chainId replayable across networks",
+          "url": "https://github.com/sherlock-audit/2025-02-rova-judging/issues/421"
+        }
+      ],
+      "comments": [
+        "LPAD-SALE-034 — the Merkle leaf is the caller, so a whitelisted wallet's proof is",
+        "worthless in anyone else's hands, and the root is this contract's alone."
+      ],
+      "body": [
+        "_openSale();",
+        "uint256 c = _validContribution();",
+        "address stranger = _fresh(\"stranger\");",
+        "",
+        "// Alice's proof, presented by a stranger.",
+        "vm.deal(stranger, c);",
+        "vm.prank(stranger);",
+        "vm.expectRevert(abi.encodeWithSignature(\"NotWhitelisted(address)\", stranger));",
+        "{{CONTRACT}}.contribute{value: c}(_proofFor(alice));",
+        "",
+        "// Alice's proof, presented by Alice.",
+        "_contribute(alice, c);",
+        "assertEq({{CONTRACT}}.contributed(alice), c);",
+        "",
+        "// And the root cannot be moved once the sale is open.",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"RootLocked()\"));",
+        "{{CONTRACT}}.setMerkleRoot(bytes32(0));"
+      ]
+    },
+    "LPAD-SALE-035": {
+      "testName": "test_AllocationScalesWithTokenDecimals",
+      "title": "Price / token-decimals mismatch in the allocation math",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Rova (Sherlock #537) — payment-token units subtracted from sale-token units",
+          "url": "https://github.com/sherlock-audit/2025-02-rova-judging/issues/537"
+        }
+      ],
+      "comments": [
+        "LPAD-SALE-035 — one price unit of ETH must buy exactly one whole token, whatever",
+        "the token's decimals are, and fractions must scale the same way."
+      ],
+      "body": [
+        "uint256 price = {{CONTRACT}}.TOKEN_PRICE_WEI();",
+        "uint256 unit = {{CONTRACT}}.TOKEN_UNIT();",
+        "assertEq(unit, 10 ** {{TOKEN}}.decimals(), \"TOKEN_UNIT does not follow the token's decimals\");",
+        "assertEq({{CONTRACT}}.tokensFor(price), unit, \"one price unit must buy one whole token\");",
+        "assertEq({{CONTRACT}}.tokensFor(3 * price + price / 2), 3 * unit + unit / 2, \"fractions do not scale\");",
+        "assertEq({{CONTRACT}}.tokensFor(0), 0);"
+      ]
+    },
+    "LPAD-SALE-036": {
+      "testName": "test_CannotSucceedOnTokensItDoesNotHold",
+      "title": "Fee-on-transfer sale token breaks allocation accounting",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Juicebox (Code4rena 2022-07, #304) — fee-on-transfer token booked at face value",
+          "url": "https://github.com/code-423n4/2022-07-juicebox-findings/issues/304"
+        }
+      ],
+      "comments": [
+        "LPAD-SALE-036 — the sale books the tokens that actually arrived and refuses to",
+        "finalize as a success unless it holds every token it owes. An unfunded (or",
+        "under-funded, fee-on-transfer) sale fails and refunds instead of stranding claims."
+      ],
+      "body": [
+        "_openSaleUnfunded();",
+        "_raiseTo({{CONTRACT}}.SOFT_CAP_WEI());",
+        "_closeSale();",
+        "{{CONTRACT}}.finalize();",
+        "",
+        "assertFalse({{CONTRACT}}.succeeded(), \"succeeded while holding none of the tokens it owes\");",
+        "uint256 c = {{CONTRACT}}.contributed(alice);",
+        "vm.prank(alice);",
+        "assertEq({{CONTRACT}}.refund(), c, \"contributor could not get out\");"
+      ]
+    },
+    "LPAD-SALE-037": {
+      "testName": "test_VestingUnlocksAtCliffThenLinearly",
+      "title": "Vesting unlock math wrong at the cliff",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Tokensoft (Sherlock M-2) — vesting rounding blocked claims",
+          "url": "https://github.com/sherlock-protocol/sherlock-reports/blob/main/audits/2023.07.21%20-%20Final%20-%20Tokensoft%20Audit%20Report.pdf"
+        }
+      ],
+      "comments": [
+        "LPAD-SALE-037 — nothing before the cliff, linear after it, everything at the end.",
+        "Pinned at the three boundaries so a refactor cannot move them."
+      ],
+      "body": [
+        "_openSale();",
+        "_raiseTo({{CONTRACT}}.SOFT_CAP_WEI());",
+        "_closeSale();",
+        "{{CONTRACT}}.finalize();",
+        "",
+        "uint256 allocation = {{CONTRACT}}.allocationOf(alice);",
+        "uint256 t0 = {{CONTRACT}}.finalizedAt();",
+        "uint256 cliff = {{CONTRACT}}.VESTING_CLIFF();",
+        "uint256 duration = {{CONTRACT}}.VESTING_DURATION();",
+        "",
+        "if (cliff > 0) {",
+        "    vm.warp(t0 + cliff - 1);",
+        "    assertEq({{CONTRACT}}.vestedOf(alice), 0, \"unlocked before the cliff\");",
+        "}",
+        "vm.warp(t0 + cliff);",
+        "if (duration == 0) {",
+        "    assertEq({{CONTRACT}}.vestedOf(alice), allocation, \"zero duration must unlock everything at the cliff\");",
+        "} else {",
+        "    assertEq({{CONTRACT}}.vestedOf(alice), 0, \"the cliff itself must not release a lump\");",
+        "    vm.warp(t0 + cliff + duration / 2);",
+        "    assertApproxEqAbs({{CONTRACT}}.vestedOf(alice), allocation / 2, 1, \"halfway is not half\");",
+        "    vm.warp(t0 + cliff + duration);",
+        "    assertEq({{CONTRACT}}.vestedOf(alice), allocation, \"end of vesting is not everything\");",
+        "}"
+      ]
+    },
+    "AAVE-RISK-010#sale": {
+      "testName": "test_PausedContributionRevertsCleanly",
+      "title": "Supply/borrow cap and pause reverts unhandled",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Sherlock Index #267",
+          "url": "https://github.com/sherlock-audit/2023-01-index-judging/issues/267"
+        }
+      ],
+      "comments": [
+        "AAVE-RISK-010 — halting must be clean and reversible, leaving no partial state."
+      ],
+      "body": [
+        "_openSale();",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.pause();",
+        "",
+        "uint256 c = _validContribution();",
+        "vm.deal(alice, c);",
+        "vm.prank(alice);",
+        "vm.expectRevert(abi.encodeWithSignature(\"EnforcedPause()\"));",
+        "{{CONTRACT}}.contribute{value: c}(_proofFor(alice));",
+        "",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.unpause();",
+        "_contribute(alice, c);",
+        "assertEq({{CONTRACT}}.totalRaised(), c, \"paused contribution left partial state\");"
+      ]
+    },
+    "AAVE-VLT-009#sale": {
+      "testName": "test_SweepCannotTouchSaleToken",
+      "title": "No ERC20 escape hatch for airdrops / stuck tokens",
+      "presets": [
+        "token-sale-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Morpho integration checklist",
+          "url": "https://docs.morpho.org/overview/resources/audits/"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-009 — a hatch that can reach what contributors are owed is the vulnerability."
+      ],
+      "body": [
+        "_openSale();",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", address({{TOKEN}})));",
+        "{{CONTRACT}}.sweep(address({{TOKEN}}), {{OWNER}});"
+      ]
+    },
+    "LPAD-CURVE-040": {
+      "testName": "test_TokensLockedUntilGraduation",
+      "title": "Curve tokens transferable before graduation",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Four.meme (Feb 2025) — pre-launch tokens reached the pool, pool pre-initialised at the attacker's price",
+          "url": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2025-02/FourMeme_exp.sol",
+          "pocFolder": "2025-02-FourMeme_exp"
+        },
+        {
+          "name": "Pump clone tokens (Mar 2025) — buy() with a recipient sent curve tokens straight to the pair",
+          "url": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2025-03/Pump_exp.sol",
+          "pocFolder": "2025-03-Pump_exp"
+        }
+      ],
+      "comments": [
+        "LPAD-CURVE-040 — until graduation the only transfers allowed are between the curve",
+        "and holders. A holder cannot pass tokens to another wallet and cannot seed the pair."
+      ],
+      "body": [
+        "uint256 got = _buy(alice, _smallBuy());",
+        "address pair = {{CONTRACT}}.PAIR();",
+        "",
+        "vm.startPrank(alice);",
+        "vm.expectRevert(abi.encodeWithSignature(\"TransfersLockedUntilGraduation()\"));",
+        "token.transfer(bob, got);",
+        "vm.expectRevert(abi.encodeWithSignature(\"TransfersLockedUntilGraduation()\"));",
+        "token.transfer(pair, got);",
+        "vm.stopPrank();",
+        "",
+        "_graduate();",
+        "vm.prank(alice);",
+        "token.transfer(bob, got);",
+        "assertEq(token.balanceOf(bob), got, \"transfers still locked after graduation\");"
+      ]
+    },
+    "LPAD-CURVE-041": {
+      "testName": "test_GraduationSurvivesPreseededPair",
+      "title": "Graduation breaks when the DEX pair was pre-seeded",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Four.meme (Feb 2025) — liquidity added into a pool the attacker had already priced",
+          "url": "https://www.chaincatcher.com/en/article/2167296"
+        },
+        {
+          "name": "Virtuals Protocol (Code4rena 2025-04, M-01) — createPair reverts once the pair exists",
+          "url": "https://code4rena.com/reports/2025-04-virtuals-protocol"
+        }
+      ],
+      "comments": [
+        "LPAD-CURVE-041 — the pair is created in the constructor and liquidity is minted on",
+        "it directly. Only WETH can reach the pair early (the token is locked); a donation",
+        "plus sync() must neither brick the graduation nor set its price."
+      ],
+      "body": [
+        "address pair = {{CONTRACT}}.PAIR();",
+        "assertTrue(pair != address(0), \"pair not created at deployment\");",
+        "",
+        "address griefer = _fresh(\"griefer\");",
+        "vm.deal(griefer, 1 ether);",
+        "vm.startPrank(griefer);",
+        "IWETH9(WETH).deposit{value: 1 ether}();",
+        "IERC20(WETH).transfer(pair, 1 ether);",
+        "IUniswapV2PairTest(pair).sync();",
+        "vm.stopPrank();",
+        "",
+        "_graduate();",
+        "assertTrue({{CONTRACT}}.graduated(), \"graduation did not happen\");",
+        "(uint112 r0, uint112 r1,) = IUniswapV2PairTest(pair).getReserves();",
+        "assertGt(uint256(r0), 0);",
+        "assertGt(uint256(r1), 0);",
+        "assertEq(token.balanceOf(address({{CONTRACT}})), 0, \"curve kept tokens\");",
+        "assertEq(address({{CONTRACT}}).balance, {{CONTRACT}}.pendingFees(), \"curve kept ETH beyond fees\");"
+      ]
+    },
+    "LPAD-CURVE-042": {
+      "testName": "test_RejectsBadSlippageAndDeadline",
+      "title": "Buy/sell without a slippage bound or deadline",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Virtuals Protocol (Code4rena 2025-04, M-02/M-03) — no minAmountOut, slippage computed at execution",
+          "url": "https://code4rena.com/reports/2025-04-virtuals-protocol"
+        },
+        {
+          "name": "Lambo.win (Code4rena 2024-12, M-03) — quotes without a deadline",
+          "url": "https://code4rena.com/reports/2024-12-lambowin"
+        }
+      ],
+      "comments": [
+        "LPAD-CURVE-042 — a trade with no floor on output and no deadline is a free sandwich",
+        "for any searcher. Both bounds are enforced on both sides of the curve."
+      ],
+      "body": [
+        "uint256 wei_ = _smallBuy();",
+        "vm.deal(alice, 2 * wei_);",
+        "vm.startPrank(alice);",
+        "",
+        "vm.expectPartialRevert(bytes4(keccak256(\"SlippageExceeded(uint256,uint256)\")));",
+        "{{CONTRACT}}.buy{value: wei_}(type(uint256).max, block.timestamp);",
+        "vm.expectPartialRevert(bytes4(keccak256(\"DeadlinePassed(uint256)\")));",
+        "{{CONTRACT}}.buy{value: wei_}(1, block.timestamp - 1);",
+        "",
+        "uint256 got = {{CONTRACT}}.buy{value: wei_}(1, block.timestamp);",
+        "token.approve(address({{CONTRACT}}), got);",
+        "vm.expectPartialRevert(bytes4(keccak256(\"SlippageExceeded(uint256,uint256)\")));",
+        "{{CONTRACT}}.sell(got, type(uint256).max, block.timestamp);",
+        "vm.expectPartialRevert(bytes4(keccak256(\"DeadlinePassed(uint256)\")));",
+        "{{CONTRACT}}.sell(got, 0, block.timestamp - 1);",
+        "vm.stopPrank();"
+      ]
+    },
+    "LPAD-CURVE-043": {
+      "testName": "test_SellPayoutIsReentrancySafe",
+      "title": "Sell-side ETH refund reentrancy",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Decent Crescendo (Feb 2026) — sell() paid ETH before updating the price",
+          "url": "https://www.darknavy.org/web3/exploits/erc1155-bonding-curve-reentrancy/"
+        }
+      ],
+      "comments": [
+        "LPAD-CURVE-043 — state is final and the tokens are in before any ETH leaves, under",
+        "a reentrancy guard. A receive() that sells again from inside the payout gets nothing."
+      ],
+      "body": [
+        "SellReenterer attacker = new SellReenterer(address({{CONTRACT}}), address(token));",
+        "uint256 wei_ = _smallBuy();",
+        "vm.deal(address(this), wei_);",
+        "attacker.buy{value: wei_}();",
+        "uint256 held = token.balanceOf(address(attacker));",
+        "",
+        "attacker.sellHalf();",
+        "assertEq(attacker.reentered(), 0, \"sell() was re-enterable during the ETH payout\");",
+        "assertEq(token.balanceOf(address(attacker)), held - held / 2, \"the re-entrant sell went through\");",
+        "assertEq(address({{CONTRACT}}).balance, {{CONTRACT}}.reserveEth() + {{CONTRACT}}.pendingFees(), \"curve balance drifted from its book\");"
+      ]
+    },
+    "LPAD-CURVE-044": {
+      "testName": "test_RoundingFavoursTheCurve",
+      "title": "Curve rounding favours the trader",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "USM/FUM (Aug 2026) — curve payout depended on how a sale was split",
+          "url": "https://github.com/SunWeb3Sec/DeFiHackLabs",
+          "pocFolder": "2026-08-USM_exp"
+        },
+        {
+          "name": "Uniswap V2 getAmountOut floors the output",
+          "url": "https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol"
+        }
+      ],
+      "comments": [
+        "LPAD-CURVE-044 — every output is floored by rounding the residual reserve up, so a",
+        "buy followed by a sell can never return more than went in, at any size."
+      ],
+      "body": [
+        "uint256 g = {{CONTRACT}}.GRADUATION_ETH();",
+        "uint256[6] memory samples = [uint256(1), 3, 1e9 + 7, g / 1000, g / 7, g - 1];",
+        "for (uint256 i = 0; i < samples.length; i++) {",
+        "    uint256 tokensOut = {{CONTRACT}}.previewBuy(samples[i]);",
+        "    assertLe({{CONTRACT}}.previewSell(tokensOut), samples[i], \"round trip pays out more than it took in\");",
+        "}",
+        "// Output is monotone in input: more ETH never buys fewer tokens.",
+        "assertLe({{CONTRACT}}.previewBuy(g / 1000), {{CONTRACT}}.previewBuy(g / 999));",
+        "",
+        "// And on chain, after fees, the same holds for a real trade.",
+        "uint256 wei_ = _smallBuy();",
+        "uint256 got = _buy(alice, wei_);",
+        "vm.startPrank(alice);",
+        "token.approve(address({{CONTRACT}}), got);",
+        "uint256 back = {{CONTRACT}}.sell(got, 0, block.timestamp);",
+        "vm.stopPrank();",
+        "assertLe(back, wei_, \"buy-then-sell returned more ETH than it cost\");"
+      ]
+    },
+    "LPAD-CURVE-045": {
+      "testName": "test_LpTokensAreBurned",
+      "title": "Graduation LP tokens retained by the deployer",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "DxSale legacy locker (May 2026) — LP held by a locker with an owner backdoor",
+          "url": "https://github.com/SunWeb3Sec/DeFiHackLabs/blob/main/src/test/2026-05/DxSale_exp.sol",
+          "pocFolder": "2026-05-DxSale_exp"
+        },
+        {
+          "name": "pump.fun (May 2024) — privileged withdraw authority over curve reserves",
+          "url": "https://www.theblock.co/post/295029/pump-fun-post-mortem"
+        }
+      ],
+      "comments": [
+        "LPAD-CURVE-045 — the LP tokens go to the dead address in the graduation transaction.",
+        "Nobody, including the deployer, can ever pull the pool."
+      ],
+      "body": [
+        "_graduate();",
+        "address pair = {{CONTRACT}}.PAIR();",
+        "uint256 supply = IERC20(pair).totalSupply();",
+        "assertGt(supply, 0, \"no liquidity minted\");",
+        "// Uniswap V2 locks MINIMUM_LIQUIDITY (1000) in the zero address on the first mint.",
+        "assertEq(IERC20(pair).balanceOf({{CONTRACT}}.DEAD()), supply - 1000, \"LP tokens not burned\");",
+        "assertEq(IERC20(pair).balanceOf({{OWNER}}), 0);",
+        "assertEq(IERC20(pair).balanceOf(address({{CONTRACT}})), 0);"
+      ]
+    },
+    "LPAD-CURVE-046": {
+      "testName": "test_WalletCapEnforced",
+      "title": "No per-wallet cap on the curve",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "PartyDAO (Code4rena 2022-09, M-02) — per-wallet caps are friction, not security",
+          "url": "https://code4rena.com/reports/2022-09-party"
+        }
+      ],
+      "comments": [
+        "LPAD-CURVE-046 — one wallet cannot take the curve. Friction, not security: a second",
+        "wallet is free, which is why the token lock is what actually protects graduation."
+      ],
+      "body": [
+        "uint256 cap = {{CONTRACT}}.MAX_WALLET();",
+        "uint256 g = {{CONTRACT}}.GRADUATION_ETH();",
+        "assertGt({{CONTRACT}}.previewBuy(g), cap, \"the whole curve fits under the wallet cap\");",
+        "",
+        "vm.deal(alice, g);",
+        "vm.prank(alice);",
+        "vm.expectPartialRevert(bytes4(keccak256(\"WalletCapExceeded(uint256,uint256)\")));",
+        "{{CONTRACT}}.buy{value: g}(1, block.timestamp);",
+        "",
+        "uint256 got = _buy(alice, _smallBuy());",
+        "assertLe(got, cap);"
+      ]
+    },
+    "LPAD-CURVE-047": {
+      "testName": "test_CurveClosesAtGraduation",
+      "title": "Curve still tradable after graduation",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Virtuals Protocol (Code4rena 2025-04, M-04) — flash-loan forced graduation, sold into the fresh pool",
+          "url": "https://code4rena.com/reports/2025-04-virtuals-protocol"
+        }
+      ],
+      "comments": [
+        "LPAD-CURVE-047 — graduation happens inside the buy that crosses the threshold, the",
+        "overshoot is refunded, and from then on the curve refuses every trade."
+      ],
+      "body": [
+        "_graduate();",
+        "assertEq({{CONTRACT}}.reserveEth(), 0, \"ETH left in the curve\");",
+        "assertEq(token.balanceOf(address({{CONTRACT}})), 0, \"tokens left in the curve\");",
+        "",
+        "vm.deal(alice, 1 ether);",
+        "vm.startPrank(alice);",
+        "vm.expectRevert(abi.encodeWithSignature(\"CurveGraduated()\"));",
+        "{{CONTRACT}}.buy{value: 1 ether}(1, block.timestamp);",
+        "vm.expectRevert(abi.encodeWithSignature(\"CurveGraduated()\"));",
+        "{{CONTRACT}}.sell(1, 0, block.timestamp);",
+        "vm.stopPrank();"
+      ]
+    },
+    "AAVE-RISK-010#curve": {
+      "testName": "test_PausedBuyRevertsCleanly",
+      "title": "Supply/borrow cap and pause reverts unhandled",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Sherlock Index #267",
+          "url": "https://github.com/sherlock-audit/2023-01-index-judging/issues/267"
+        }
+      ],
+      "comments": [
+        "AAVE-RISK-010 — halting must be clean and reversible. Note the owner can halt trades",
+        "but can never reach the reserves: the pause is the only lever they hold."
+      ],
+      "body": [
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.pause();",
+        "",
+        "uint256 wei_ = _smallBuy();",
+        "vm.deal(alice, wei_);",
+        "vm.prank(alice);",
+        "vm.expectRevert(abi.encodeWithSignature(\"EnforcedPause()\"));",
+        "{{CONTRACT}}.buy{value: wei_}(1, block.timestamp);",
+        "",
+        "vm.prank({{OWNER}});",
+        "{{CONTRACT}}.unpause();",
+        "_buy(alice, wei_);",
+        "assertGt(token.balanceOf(alice), 0, \"unpause did not restore trading\");"
+      ]
+    },
+    "AAVE-VLT-009#curve": {
+      "testName": "test_SweepCannotTouchInventory",
+      "title": "No ERC20 escape hatch for airdrops / stuck tokens",
+      "presets": [
+        "bonding-curve-launchpad"
+      ],
+      "incidents": [
+        {
+          "name": "Morpho integration checklist",
+          "url": "https://docs.morpho.org/overview/resources/audits/"
+        }
+      ],
+      "comments": [
+        "AAVE-VLT-009 — a hatch that can reach the launch token or WETH is the vulnerability."
+      ],
+      "body": [
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", address(token)));",
+        "{{CONTRACT}}.sweep(address(token), {{OWNER}});",
+        "vm.prank({{OWNER}});",
+        "vm.expectRevert(abi.encodeWithSignature(\"CannotSweepPrincipal(address)\", WETH));",
+        "{{CONTRACT}}.sweep(WETH, {{OWNER}});"
       ]
     }
   }

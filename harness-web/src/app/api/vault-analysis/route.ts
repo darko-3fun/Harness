@@ -1,6 +1,13 @@
 import { createPublicClient, http, formatUnits } from 'viem';
 
-import { MORPHO_MAINNET } from '@/generator/attacks/addresses';
+import {
+  AAVE_MAINNET,
+  MORPHO_BLUE,
+  assetByAddress,
+  cometFor,
+  morphoLltvPct,
+  resolveMorphoMarket,
+} from '@/generator/markets';
 import { ADDRESS_RE, type GenerateOptions } from '@/types';
 import type {
   SettingAdvice,
@@ -27,17 +34,15 @@ import type {
  * Morpho Blue has no cap at all, so the advice there branches explicitly rather
  * than pretending Morpho has a headroom of infinity.
  *
- * Read-only: it uses the Virtual Environment's public RPC and holds no keys.
+ * Read-only: it reads the latest block from a public RPC and holds no keys.
  */
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
 
-const RPC =
-  process.env.TENDERLY_PUBLIC_RPC ??
-  'https://virtual.mainnet.eu.rpc.tenderly.co/petnica2026/project/harness-mainnet-1786200683168';
+/** Override with HARNESS_RPC_URL. The default is a free endpoint; reads are latest-block. */
+const RPC = process.env.HARNESS_RPC_URL ?? process.env.TENDERLY_PUBLIC_RPC ?? 'https://eth.drpc.org';
 
-const DATA_PROVIDER = '0x0a16f2FCC0D44FaE41cc54e079281D84A363bECD' as const;
 const SECONDS_PER_YEAR = 31_536_000;
 
 /**
@@ -86,8 +91,10 @@ export async function POST(req: Request): Promise<Response> {
   try {
     snap =
       opts.preset === 'morpho-blue-vault'
-        ? await readMorphoMarket(client, asset)
-        : await readAaveMarket(client, asset);
+        ? await readMorphoMarket(client, asset, opts.morphoMarketId)
+        : opts.preset === 'compound-v3-vault'
+          ? await readCometMarket(client, asset)
+          : await readAaveMarket(client, asset);
   } catch (e) {
     const msg = (e as Error).message;
     return json({ error: msg.startsWith('ADVISOR:') ? msg.slice(8).trim() : `Could not read market state for ${asset}. (${msg.slice(0, 140)})` }, 502);
@@ -110,7 +117,7 @@ export async function POST(req: Request): Promise<Response> {
   ];
 
   const analysis: VaultAnalysis = {
-    asset: { address: asset, symbol: symbolFor(asset), decimals: snap.decimals },
+    asset: { address: asset, symbol: await symbolFor(client, asset), decimals: snap.decimals },
     market: {
       protocol: snap.protocol,
       supplyCap: snap.supplyCap === null ? 'no cap' : fmt(snap.supplyCap),
@@ -139,12 +146,16 @@ function json(body: unknown, status: number): Response {
   });
 }
 
-const KNOWN: Record<string, string> = {
-  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC',
-  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'WETH',
-  '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 'WBTC',
-};
-const symbolFor = (a: string) => KNOWN[a.toLowerCase()] ?? 'token';
+/** The catalogue first, then the token's own symbol(); 'token' only if both fail. */
+async function symbolFor(client: Client, a: string): Promise<string> {
+  const known = assetByAddress(a);
+  if (known) return known.symbol;
+  try {
+    return await client.readContract({ address: a as `0x${string}`, abi: erc20Abi, functionName: 'symbol' });
+  } catch {
+    return 'token';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Protocol readers. The only code that knows which lending market it is talking to.
@@ -208,10 +219,27 @@ const dataProviderAbi = [
   },
 ] as const;
 
+const providerAbi = [
+  {
+    name: 'getPoolDataProvider',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+  },
+] as const;
+
 type Client = ReturnType<typeof createPublicClient>;
 
 async function readAaveMarket(client: Client, asset: `0x${string}`): Promise<MarketSnapshot> {
-  const base = { address: DATA_PROVIDER, abi: dataProviderAbi, args: [asset] } as const;
+  // Resolved through the provider rather than pinned: Aave's data provider address
+  // has moved across its own upgrades, and the vault resolves the Pool the same way.
+  const dataProvider = await client.readContract({
+    address: AAVE_MAINNET.POOL_ADDRESSES_PROVIDER,
+    abi: providerAbi,
+    functionName: 'getPoolDataProvider',
+  });
+  const base = { address: dataProvider, abi: dataProviderAbi, args: [asset] } as const;
   const [caps, cfg, rd, paused] = await Promise.all([
     client.readContract({ ...base, functionName: 'getReserveCaps' }),
     client.readContract({ ...base, functionName: 'getReserveConfigurationData' }),
@@ -308,7 +336,77 @@ const irmAbi = [
 
 const erc20Abi = [
   { name: 'decimals', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
+  { name: 'symbol', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
 ] as const;
+
+const cometAbi = [
+  { name: 'totalSupply', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { name: 'totalBorrow', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { name: 'getUtilization', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { name: 'getSupplyRate', type: 'function', stateMutability: 'view', inputs: [{ name: 'utilization', type: 'uint256' }], outputs: [{ type: 'uint64' }] },
+  { name: 'getBorrowRate', type: 'function', stateMutability: 'view', inputs: [{ name: 'utilization', type: 'uint256' }], outputs: [{ type: 'uint64' }] },
+  { name: 'isSupplyPaused', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
+  { name: 'isWithdrawPaused', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
+  { name: 'decimals', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
+] as const;
+
+/**
+ * Compound v3. One Comet per base asset, no supply cap on the base asset at all
+ * (caps are per collateral), and two independent pause switches. The supply rate
+ * is a per-second rate scaled by 1e18; the spread between what borrowers pay and
+ * what suppliers earn is the protocol's take.
+ */
+async function readCometMarket(client: Client, asset: `0x${string}`): Promise<MarketSnapshot> {
+  const comet = cometFor(asset);
+  if (!comet) {
+    throw new Error(
+      `ADVISOR: No Compound v3 Comet lends ${(await symbolFor(client, asset))} on Ethereum. Pick USDC, WETH or USDT.`,
+    );
+  }
+  const base = { address: comet.comet, abi: cometAbi } as const;
+  const [totalSupply, totalBorrow, utilization, supplyPaused, withdrawPaused, decimals] = await Promise.all([
+    client.readContract({ ...base, functionName: 'totalSupply' }),
+    client.readContract({ ...base, functionName: 'totalBorrow' }),
+    client.readContract({ ...base, functionName: 'getUtilization' }),
+    client.readContract({ ...base, functionName: 'isSupplyPaused' }),
+    client.readContract({ ...base, functionName: 'isWithdrawPaused' }),
+    client.readContract({ ...base, functionName: 'decimals' }),
+  ]);
+  const [supplyRate, borrowRate] = await Promise.all([
+    client.readContract({ ...base, functionName: 'getSupplyRate', args: [utilization] }),
+    client.readContract({ ...base, functionName: 'getBorrowRate', args: [utilization] }),
+  ]);
+
+  const supplied = Number(formatUnits(totalSupply, decimals));
+  const borrowed = Number(formatUnits(totalBorrow, decimals));
+  const util = Number(utilization) / 1e18;
+  const supplyApyPct = (Number(supplyRate) / 1e18) * SECONDS_PER_YEAR * 100;
+  const borrowApyPct = (Number(borrowRate) / 1e18) * SECONDS_PER_YEAR * 100;
+  const spreadPct = borrowApyPct * util - supplyApyPct;
+
+  return {
+    protocol: 'Compound v3',
+    decimals,
+    supplied,
+    availableLiquidity: Math.max(supplied - borrowed, 0),
+    supplyCap: null,
+    headroom: null,
+    utilization: util,
+    supplyApyPct,
+    // Comet has no explicit supply-side fee; the take is the spread between rates,
+    // shown as a share of what borrowers pay.
+    protocolFeePct: borrowApyPct * util > 0 ? (spreadPct / (borrowApyPct * util)) * 100 : 0,
+    protocolFeeLabel: 'Rate spread',
+    frozen: false,
+    paused: supplyPaused || withdrawPaused,
+    extra: [
+      { label: 'Utilisation', value: `${(util * 100).toFixed(1)}%` },
+      { label: 'Borrowed', value: fmt(borrowed) },
+      { label: 'Comet', value: comet.name },
+      ...(withdrawPaused ? [{ label: 'Withdrawals', value: 'paused' }] : []),
+    ],
+  };
+}
 
 /**
  * Morpho Blue. Three things differ from Aave and each one changes the advice:
@@ -320,9 +418,24 @@ const erc20Abi = [
  *   - the supply rate is not stored. It is derived: borrow rate from the IRM,
  *     scaled by utilisation, less the market fee.
  */
-async function readMorphoMarket(client: Client, asset: `0x${string}`): Promise<MarketSnapshot> {
-  const id = MORPHO_MAINNET.MARKET_ID as `0x${string}`;
-  const base = { address: MORPHO_MAINNET.MORPHO as `0x${string}`, abi: morphoAbi, args: [id] } as const;
+async function readMorphoMarket(
+  client: Client,
+  asset: `0x${string}`,
+  marketId: string | undefined,
+): Promise<MarketSnapshot> {
+  // The vault pins one market at construction (MRPH-MKT-018), so the advice has to
+  // be about that market and no other. The catalogue holds the deepest markets per
+  // loan asset; an asset with none is refused rather than analysed against the
+  // wrong market.
+  const market = resolveMorphoMarket(asset, marketId);
+  if (!market) {
+    throw new Error(
+      `ADVISOR: No catalogued Morpho Blue market lends ${await symbolFor(client, asset)}. ` +
+        'A Morpho market is the hash of its five parameters (MRPH-MKT-018), so there is nothing to advise on until one is pinned.',
+    );
+  }
+  const id = market.id;
+  const base = { address: MORPHO_BLUE, abi: morphoAbi, args: [id] } as const;
 
   const [mkt, params] = await Promise.all([
     client.readContract({ ...base, functionName: 'market' }),
@@ -331,11 +444,7 @@ async function readMorphoMarket(client: Client, asset: `0x${string}`): Promise<M
 
   const [loanToken, collateralToken, , irm, lltv] = params;
   if (loanToken.toLowerCase() !== asset.toLowerCase()) {
-    throw new Error(
-      `ADVISOR: This vault's asset is ${symbolFor(asset)}, but the pinned Morpho market lends ${symbolFor(loanToken)}. ` +
-        'A Morpho market is the hash of its five parameters (MRPH-MKT-018), so a different asset is a different market — ' +
-        'there is nothing to advise on until the market is repinned.',
-    );
+    throw new Error('ADVISOR: The catalogued market does not lend this asset; the catalogue is stale.');
   }
 
   const decimals = Number(
@@ -386,8 +495,8 @@ async function readMorphoMarket(client: Client, asset: `0x${string}`): Promise<M
     paused: false,
     extra: [
       { label: 'Utilisation', value: `${(utilization * 100).toFixed(1)}%` },
-      { label: 'LLTV', value: `${(Number(lltv) / 1e16).toFixed(0)}%` },
-      { label: 'Collateral', value: symbolFor(collateralToken) },
+      { label: 'LLTV', value: morphoLltvPct(market) },
+      { label: 'Collateral', value: market.collateralSymbol },
       { label: 'Borrowed', value: fmt(borrowed) },
     ],
   };
@@ -418,6 +527,7 @@ function adviseDepositCap(opts: GenerateOptions, snap: MarketSnapshot): SettingA
   const suggested = Math.max(Math.floor(ceiling / 2), 0);
   const suggestedRaw = suggested > 0 ? `${suggested}${'0'.repeat(decimals)}` : '0';
   const recommended = `${fmt(suggested)} (${suggestedRaw})`;
+  const recommendedRaw = suggestedRaw;
 
   if (capTokens === null) {
     return {
@@ -426,6 +536,7 @@ function adviseDepositCap(opts: GenerateOptions, snap: MarketSnapshot): SettingA
       verdict: 'warn',
       current: 'unset',
       recommended,
+      recommendedRaw,
       finding: headroom === null ? 'AAVE-VLT-004' : 'AAVE-RISK-010',
       detail:
         headroom === null
@@ -441,6 +552,7 @@ function adviseDepositCap(opts: GenerateOptions, snap: MarketSnapshot): SettingA
       verdict: 'bad',
       current: fmt(capTokens),
       recommended,
+      recommendedRaw,
       finding: 'AAVE-RISK-010',
       detail: `Your cap exceeds Aave's remaining headroom of ${fmt(headroom)}. Deposits revert once the market cap is reached, and the vault has no way to signal that in advance.`,
     };
@@ -453,6 +565,7 @@ function adviseDepositCap(opts: GenerateOptions, snap: MarketSnapshot): SettingA
       verdict: headroom === null ? 'bad' : 'warn',
       current: fmt(capTokens),
       recommended: fmt(Math.floor(availableLiquidity / 2)),
+      recommendedRaw: `${Math.max(Math.floor(availableLiquidity / 2), 0)}${'0'.repeat(decimals)}`,
       finding: 'AAVE-VLT-004',
       detail:
         headroom === null
@@ -491,6 +604,7 @@ function adviseFee(opts: GenerateOptions, snap: MarketSnapshot): SettingAdvice {
     verdict,
     current: `${bps} bps`,
     recommended: verdict === 'warn' ? '≤ 500 bps' : undefined,
+    recommendedRaw: verdict === 'warn' ? '500' : undefined,
     detail:
       `At the current ${snap.supplyApyPct.toFixed(2)}% supply APY, ${bps} bps takes ${takes.toFixed(3)}% and leaves depositors ${depositorsGet.toFixed(3)}%. ` +
       alreadyTaken +
@@ -519,6 +633,7 @@ function adviseOffset(opts: GenerateOptions, snap: MarketSnapshot): SettingAdvic
       verdict: 'bad',
       current: '0',
       recommended,
+      recommendedRaw: recommended,
       finding: 'AAVE-VLT-003',
       detail:
         'With no offset there are no virtual shares, and the first depositor into an empty vault can be front-run and have their deposit rounded away entirely. This is the PoolTogether bug.',
@@ -532,6 +647,7 @@ function adviseOffset(opts: GenerateOptions, snap: MarketSnapshot): SettingAdvic
       verdict: 'warn',
       current: String(offset),
       recommended,
+      recommendedRaw: recommended,
       finding: 'AAVE-VLT-003',
       detail: `An attacker must donate roughly ${fmt(multiplier)}× the deposit they want to capture. That is affordable for a small first deposit. Raise the offset until the attack costs more than it can win.`,
     };
