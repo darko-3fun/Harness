@@ -179,6 +179,48 @@ export, server-side compile, and the MCP server.
 
 Not wired: Tenderly deployment and scenario simulation live in `harness-api` and need a
 Virtual Environment of your own; the one this project was built on is rate-limited.
+See below for the three values that turn them on.
+
+---
+
+## Wiring up Tenderly (deploy + simulate)
+
+Credentials were never committed to this repo, by design — `.env` has been gitignored
+since the first commit, so there is nothing to recover from git history. To turn the
+third pillar on you need three values from your own Tenderly account:
+
+1. **Account and project slugs** — they are in the dashboard URL:
+   `dashboard.tenderly.co/<ACCOUNT>/<PROJECT>`.
+2. **An access key** — Account Settings → Access Tokens → Generate Access Token.
+
+Put them in `harness-api/.env` (already scaffolded, gitignored, and carrying a freshly
+generated throwaway deployer key):
+
+```bash
+TENDERLY_ACCOUNT=your-account-slug
+TENDERLY_PROJECT=your-project-slug
+TENDERLY_ACCESS_KEY=your-access-token
+```
+
+Then let the project build the environment for you:
+
+```bash
+cd harness-api
+npm install
+npm run vnet:create   # creates a fresh Virtual Environment, writes the RPC URLs back into .env
+npm run vnet:seed     # funds the deployer with real USDC/WETH on the fork
+npm run chain:check   # proves it works end to end
+npm start             # http://localhost:8787/health → "chainConfigured": true
+```
+
+`vnet:create` writes `TENDERLY_ADMIN_RPC`, `TENDERLY_PUBLIC_RPC` and
+`TENDERLY_EXPLORER_BASE` itself; you never paste an RPC URL by hand. The Admin RPC is a
+credential — it carries the `tenderly_setBalance` cheatcodes — so it stays server-side
+and is never printed or sent to the browser.
+
+Creating a **new** environment is also the fix for a rate-limited one: the endpoint this
+project was built against still resolves but answers `429`, which is an account-level
+quota, not a dead URL.
 
 We do not claim the generated code is audit-grade. We claim it starts from the hardened
 pattern rather than the tutorial pattern, and ships the tests that prove the difference.
