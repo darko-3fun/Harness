@@ -157,7 +157,16 @@ export interface CompileResult {
   errors: { severity: string; message: string; line?: number }[];
 }
 
-export interface DeployResult { address: `0x${string}`; explorerUrl: string; txHash: string; }
+export interface DeployResult {
+  address: `0x${string}`;
+  txHash: string;
+  /**
+   * Absent on a local fork, which has nowhere to publish to. Present only when an
+   * explorer is pointed at the chain (EXPLORER_BASE), so a missing link means
+   * "no explorer here", never "the deploy failed".
+   */
+  explorerUrl?: string;
+}
 
 export type Scenario =
   | 'supply-borrow'

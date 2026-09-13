@@ -8,10 +8,11 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "verify": "tsx scripts/compile-all.ts && tsx scripts/mutate-audit.ts",
+    "verify": "tsx scripts/compile-all.ts && tsx scripts/mutate-audit.ts && tsx scripts/export-findings.ts",
     "verify:emit": "tsx scripts/emit-projects.ts .harness-out",
     "preview": "tsx scripts/preview.ts",
     "sync:shared": "node scripts/sync-shared.mjs",
+    "sync:findings": "tsx scripts/export-findings.ts",
     "prebuild": "node scripts/sync-shared.mjs",
     "predev": "node scripts/sync-shared.mjs"
   },

@@ -1,8 +1,8 @@
-// B8 — seed the virtual net so the demo account visibly holds real USDC/WETH on the explorer.
+// Seed the fork so the deployer holds real USDC/WETH to run scenarios with.
 
 import { formatUnits } from 'viem';
 import { DECIMALS, TOKENS, erc20Abi } from '../aave.js';
-import { deployerAccount, publicClient, setErc20Balance, setNativeBalance } from '../tenderly.js';
+import { assertWritableFork, deployerAccount, publicClient, setErc20Balance, setNativeBalance } from '../chain.js';
 
 const SEED = [
   { token: TOKENS.USDC, amount: 1_000_000n * 10n ** 6n },
@@ -10,6 +10,7 @@ const SEED = [
 ] as const;
 
 async function main(): Promise<void> {
+  await assertWritableFork();
   const account = deployerAccount();
   const pub = publicClient();
 

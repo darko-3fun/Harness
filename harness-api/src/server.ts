@@ -51,9 +51,9 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     findings: loadFindings().length,
-    chainConfigured: Boolean(env.TENDERLY_ADMIN_RPC && env.DEPLOYER_PRIVATE_KEY),
-    publicRpc: env.TENDERLY_PUBLIC_RPC || null,
-    explorerBase: env.TENDERLY_EXPLORER_BASE || null,
+    rpcUrl: env.RPC_URL,
+    forkBlock: env.FORK_BLOCK || null,
+    explorerBase: env.EXPLORER_BASE || null,
   });
 });
 

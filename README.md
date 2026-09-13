@@ -111,8 +111,13 @@ MyFlashLoanReceiver 7 attack + 3 fuzz + 2 invariants  12/12
                                                       97/97
 Same four asset-bound presets with WETH instead of USDC: green.
 
-Audit corpus: 38 findings, 53 mutations. Every preset's clean output triggers
+Audit corpus: 37 findings, 53 mutations. Every preset's clean output triggers
 nothing; each mutation triggers exactly the finding that names it.
+
+harness-api on a local Anvil fork:
+  4 of 4 scenarios            deploy + simulate against the real Aave Pool
+  twice in a row, same fork   identical results — snapshots and a fork reset
+  smoke / compile:check / route:check / verify:generated   all green
 ```
 
 The property suite earned its place before it shipped: run against the real markets it
@@ -162,7 +167,8 @@ harness-web/            Next.js app: generators, audit engine, preview, export
   src/audit/            the findings corpus and the rule engine
   src/generator/attacks/     attack-test assembler and per-preset scaffolds
   src/generator/properties/  fuzz + invariant assembler
-harness-api/            compile, deploy, simulate (Tenderly)
+harness-api/            compile, deploy, simulate against a local Anvil fork
+  src/chain.ts          the fork client: cheatcodes, impersonation, snapshots, tracing
 harness-mcp/            the same generate / audit / advise tools, as an MCP server
 ```
 
@@ -175,72 +181,102 @@ engine runs in the app and needs no network.
 
 Built and verified: six generators, the audit corpus with mutation tests, both test
 assemblers, the settings advisor against live Aave, Morpho and Compound state, project
-export, server-side compile, and the MCP server.
+export, server-side compile, deploy and simulate against a local fork, and the MCP server.
 
-Not wired: deployment and scenario simulation live in `harness-api` and need a forked
-chain to talk to. Everything else needs no account with anyone. See below.
+Known gaps, stated plainly. The simulate scenarios still speak Aave only — the four of
+them predate the Morpho, Compound and launchpad presets, which have full test suites but
+no scenario. The two hand-written reference contracts in `harness-api/contracts/samples`
+are older than the generator and the audit engine reports one real gap in the flash-loan
+one, which its own checks name rather than hide.
 
 ---
 
 ## Does any of this need an account? No.
 
-Nothing in the product requires a key, a login or a paid plan:
+Nothing here requires a key, a login or a paid plan — including deploy and simulate,
+which run against a local [Anvil](https://getfoundry.sh) fork rather than a hosted one.
 
 | | Needs an account? |
 |---|---|
 | Generate any preset | no |
 | Audit, including code you paste or edit | no — the engine runs locally, offline |
-| Compile | no — solc runs server-side in the app |
+| Compile | no — solc runs server-side |
 | Settings advisor reading live Aave / Morpho / Compound state | no — a public RPC |
 | Download a project and run both suites on a mainnet fork | no — a public archive RPC |
+| **Deploy a contract and simulate scenarios against real Aave** | **no — a local Anvil fork** |
 
-The exported project ships `MAINNET_RPC_URL=https://eth.drpc.org` and `FORK_BLOCK`,
-which is only a block number. A clean download was verified end to end with every
-`TENDERLY_*` variable unset: **17/17 on the Aave vault**, the same numbers as any other
-run. If you see `TENDERLY_FORK_BLOCK` in an older `.env`, it is still read, but the name
-was misleading and is now `FORK_BLOCK`.
-
-### What a hosted fork would add
-
-A Tenderly Virtual Environment was used during the original build and is **optional**.
-It buys two things, neither of which the product depends on:
-
-1. **A public, shareable explorer URL with verified source** for a deployed contract.
-2. Higher rate limits than a free public RPC, which matters only for long invariant runs.
-
-If you want deploy and simulate without any account at all, fork locally with Anvil,
-which ships with Foundry:
-
-```bash
-anvil --fork-url https://eth.drpc.org --fork-block-number 25710954
-```
-
-That serves real mainnet state and the same cheatcodes `harness-api` uses —
-`anvil_setBalance` in place of `tenderly_setBalance`. Verified working. What it cannot
-give you is the shareable explorer link, because it is local.
-
-### If you do have a Tenderly account
-
-Credentials were never committed here — `.env` has been gitignored since the first
-commit, so there is nothing to recover from git history. Put three dashboard values into
-`harness-api/.env` (scaffolded, gitignored, and carrying a freshly generated throwaway
-deployer key):
-
-```bash
-TENDERLY_ACCOUNT=your-account-slug     # from dashboard.tenderly.co/<ACCOUNT>/<PROJECT>
-TENDERLY_PROJECT=your-project-slug
-TENDERLY_ACCESS_KEY=your-access-token  # Account Settings → Access Tokens
-```
-
-Then `npm run vnet:create` builds the environment and writes `TENDERLY_ADMIN_RPC`,
-`TENDERLY_PUBLIC_RPC` and `TENDERLY_EXPLORER_BASE` back into `.env` itself; you never
-paste an RPC URL by hand. The Admin RPC carries the balance cheatcodes, so it stays
-server-side and is never sent to the browser.
+The exported project ships `MAINNET_RPC_URL=https://eth.drpc.org` and `FORK_BLOCK`, which
+is only a block number. A clean download was verified with every `TENDERLY_*` variable
+unset: 17/17 on the Aave vault, the same numbers as any other run.
 
 ---
 
-We do not claim the generated code is audit-grade. We claim it starts from the hardened
-pattern rather than the tutorial pattern, and ships the tests that prove the difference.
+## Deploy and simulate
+
+Start a fork, then start the service. Neither needs anything configured:
+
+```bash
+# 1. a fork of real mainnet, pinned so runs are reproducible
+anvil --fork-url https://eth.drpc.org --fork-block-number 25710954
+
+# 2. the service
+cd harness-api && npm install && npm start     # http://localhost:8787/health
+```
+
+`npm run fork` prints that exact command and says whether a usable fork is already
+running. On Windows, run Anvil inside WSL — the port is reachable from Windows as-is.
+
+Then:
+
+```bash
+npm run seed          # real USDC and WETH on the fork
+npm run chain:check   # deploy both samples, run all four scenarios, print traces
+```
+
+### What the scenarios prove
+
+`chain:check` deploys the two reference contracts and runs every scenario against the
+real Aave Pool on the fork. The headline is `vault-deposit`, which runs the actual
+first-depositor inflation attack rather than gesturing at it: an attacker opens a dust
+position, donates 100,000 aUSDC straight at the vault, then a victim deposits 25,000.
+
+```
+attacker donated (aToken, direct transfer): +99999.999999
+victim deposited:                           +25000
+victim redeemable after the donation:       +25000
+victim value LOST to the attacker:          +0
+attacker spend per unit extracted:          infinite — attack extracted nothing
+```
+
+Each scenario runs from a snapshot and the fork is reset at the start of every run, so
+the four are independent and the suite gives the same answer however many times you run
+it. That is not cosmetic: scenarios share a deployer and the same Aave reserves, and
+without isolation an earlier position decides whether a later borrow is collateralised.
+
+### Why a local fork loses nothing
+
+A fork copies real mainnet state at one block and gives you a private timeline. That was
+equally true of the hosted environment this replaced — neither follows the chain live.
+Same contracts, same liquidity, same oracle prices, same EVM.
+
+Three RPC methods had to change, all mechanical:
+
+| Hosted fork | Local Anvil |
+|---|---|
+| `tenderly_setBalance` | `anvil_setBalance` |
+| `tenderly_setErc20Balance` | no equivalent — the balance slot is discovered, then written with `anvil_setStorageAt` |
+| `eth_sendTransaction` from any address | `anvil_autoImpersonateAccount`, then the same call |
+
+Token balances are the interesting one. A token's balance mapping sits at a slot number
+that is an implementation detail of that token, so the slot is **discovered**: write a
+value at a candidate, ask the token what it now reports, keep the slot that agrees and
+roll back every other write. That is what Foundry's own `deal` cheatcode does, and it
+works on USDC, WETH, DAI and WBTC without a hardcoded table.
+
+The one thing genuinely lost is a public, shareable explorer URL, because a local chain
+has nowhere to publish to. `EXPLORER_BASE` is read if you run an explorer against the
+fork (Otterscan, say); otherwise deploy and simulate report no link rather than a broken
+one.
 
 ---
 

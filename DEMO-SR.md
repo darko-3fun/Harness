@@ -148,9 +148,10 @@ u poslednjoj sekciji.
 
 Budi iskren, to ostavlja bolji utisak nego izbegavanje:
 
-> „Deploy i simulacija kroz Tenderly žive u `harness-api` i traže sopstveni Virtual
-> Environment — onaj na kome je projekat pravljen je sada rate-limited. Sve ostalo —
-> generisanje, audit, savetnik za sva tri tržišta, export, MCP — radi bez ključeva."
+> „Scenariji za simulaciju za sada govore samo Aave — ta četiri su starija od Morpho,
+> Compound i launchpad preseta, koji imaju pune test pakete ali još nemaju scenario.
+> Sve ostalo radi bez ijednog naloga: generisanje, audit, savetnik za sva tri tržišta,
+> export, deploy i simulacija na lokalnom forku, MCP."
 
 ---
 
@@ -191,7 +192,11 @@ jer nema kataloškog marketa. Odbijanje je funkcija, ne ograničenje.)*
   i može da odbije nesiguran ulaz. LLM ne može da garantuje ni jedno ni drugo.
 - **Odakle nalazi?** Svaki je vezan za konkretan incident — Code4rena, Sherlock, ili
   dokumentacija protokola. Linkovi su u samim komentarima generisanog testa.
-- **Zašto Tenderly?** Treba nam archive node da bismo fiksirali blok. Bez fiksiranog bloka
-  test koji je danas zelen sutra pukne bez ikakve promene u kodu.
+- **Zašto fiksiran blok?** Bez njega test koji je danas zelen sutra pukne bez ikakve
+  promene u kodu. Fork je fotografija, ne prozor — i lokalni Anvil i hostovani Tenderly
+  se zamrznu na bloku na kome su otvoreni.
+- **Zašto Anvil, a ne Tenderly?** Isto stanje, isti EVM, isti pravi Aave — a bez naloga,
+  ključa i računa. Jedino što se gubi je javni explorer link. Balanse tokena pišemo tako
+  što *otkrijemo* storage slot (isto kao Foundry `deal`), jer Anvil nema setErc20Balance.
 - **Morpho market:** nije izmišljen — pronađen skeniranjem `CreateMarket` logova i rangiran
   po slobodnoj likvidnosti. WBTC/USDC, 86% LLTV.

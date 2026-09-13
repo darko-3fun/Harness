@@ -94,10 +94,18 @@ contract HardenedAaveV3Vault is ERC4626, Ownable, Pausable {
         depositCap = cap;
     }
 
-    /// aTokens rebase, so the vault's Aave position IS its assets. Donations are not detectable
-    /// here and are neutralised by the virtual-share offset below rather than pretended away.
+    /// AAVE-VLT-003 — internal accounting, never A_TOKEN.balanceOf(address(this)).
+    ///
+    /// This used to return the live aToken balance and lean on the virtual-share offset alone.
+    /// That is a defensible reading of the first-depositor attack, but it is not the whole
+    /// finding: aTokens are plain ERC20s, so anyone can donate into the vault at any time, and
+    /// an offset only makes the empty-vault case expensive rather than impossible. Tracking the
+    /// principal here makes a donation move nothing at all, which is what the generator emits.
+    ///
+    /// The trade is that Aave interest is no longer credited automatically; it accrues as aTokens
+    /// the vault holds beyond its book, which a harvest function would fold back in.
     function totalAssets() public view override returns (uint256) {
-        return A_TOKEN.balanceOf(address(this));
+        return _totalDeposited;
     }
 
     /// AAVE-VLT-003 — the donation/first-depositor defence. Deleting this override is what makes

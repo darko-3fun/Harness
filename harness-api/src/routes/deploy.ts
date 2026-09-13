@@ -1,11 +1,11 @@
 import type { Abi } from 'viem';
 import { explorerAddressUrl } from '../env.js';
-import { deployerAccount, publicClient, setNativeBalance, walletClient, virtualNet } from '../tenderly.js';
+import { assertWritableFork, deployerAccount, publicClient, setNativeBalance, walletClient, localChain } from '../chain.js';
 import { assertConstructorArgs, assertContractName, assertSource, ValidationError } from '../validate.js';
 import { compileContract } from './compile.js';
 import type { DeployResult } from '../types.js';
 
-const GAS_FLOOR = 10n ** 18n; // 1 ETH on the virtual net
+const GAS_FLOOR = 10n ** 18n; // 1 ETH on the fork
 
 export interface DeployInput {
   source: string;
@@ -29,6 +29,8 @@ export async function deployContractSource(input: DeployInput): Promise<DeployRe
     throw new ValidationError(`Cannot deploy: ${first}`);
   }
 
+  await assertWritableFork();
+
   const account = deployerAccount();
   const pub = publicClient();
 
@@ -41,7 +43,7 @@ export async function deployContractSource(input: DeployInput): Promise<DeployRe
     bytecode: compiled.bytecode,
     args: input.constructorArgs,
     account,
-    chain: virtualNet(),
+    chain: localChain(),
   });
 
   const receipt = await pub.waitForTransactionReceipt({ hash });
@@ -49,9 +51,10 @@ export async function deployContractSource(input: DeployInput): Promise<DeployRe
     throw new Error(`Deployment reverted (tx ${hash})`);
   }
 
+  const explorerUrl = explorerAddressUrl(receipt.contractAddress);
   return {
     address: receipt.contractAddress,
-    explorerUrl: explorerAddressUrl(receipt.contractAddress),
     txHash: hash,
+    ...(explorerUrl ? { explorerUrl } : {}),
   };
 }

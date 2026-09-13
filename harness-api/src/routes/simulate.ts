@@ -25,15 +25,17 @@ import {
   swapRouterAbi,
 } from '../aave.js';
 import {
+  assertWritableFork,
   deployerAccount,
+  enableImpersonation,
   fetchTrace,
   publicClient,
-  adminRpc,
+  rpc,
   setErc20Balance,
   setNativeBalance,
-  virtualNet,
+  localChain,
   walletClient,
-} from '../tenderly.js';
+} from '../chain.js';
 import {
   assertAddress,
   assertFunctionSignature,
@@ -48,8 +50,8 @@ const MAX_UINT96 = (1n << 96n) - 1n;
 const SLIPPAGE_BPS = 100n; // 1% — deliberately explicit, see AAVE-SWP-014
 /** The receiver entrypoint is driven positionally, so its parameter list is fixed. */
 const ENTRYPOINT_ARGS = '(address,uint256,bytes)';
-/** Vault-scenario actors, driven by Tenderly impersonation rather than keys. Keeping them
- *  separate from the deployer means the scenario never inherits its accumulated Aave position. */
+/** Vault-scenario actors, driven by impersonation rather than keys. Keeping them separate
+ *  from the deployer means the scenario never inherits its accumulated Aave position. */
 const ATTACKER = '0xbeef000000000000000000000000000000000002' as Address;
 const VICTIM = '0xbeef000000000000000000000000000000000001' as Address;
 
@@ -96,10 +98,14 @@ function decimalsOf(token: Address, fallback = 18): number {
 type Tracked = { address: Address; name: string; decimals: number };
 
 export async function runScenario(input: SimulateInput): Promise<SimulateResult> {
+  await assertWritableFork();
+  // The vault scenario sends as an attacker and a victim we hold no keys for.
+  await enableImpersonation();
+
   const pub = publicClient();
   const wallet = walletClient();
   const account = deployerAccount();
-  const chain = virtualNet();
+  const chain = localChain();
 
   const pool = (await pub.readContract({
     address: MAINNET_ADDRESSES_PROVIDER,
@@ -438,9 +444,9 @@ export async function runScenario(input: SimulateInput): Promise<SimulateResult>
     if (receipt.status !== 'success') throw new Error(`Transaction reverted (${hash})`);
   }
 
-  /** Sends from an address we hold no key for, using the virtual net's impersonation support. */
+  /** Sends from an address we hold no key for; auto-impersonation is on for the whole run. */
   async function sendAs(from: Address, to: Address, data: Hex): Promise<Hex> {
-    const hash = await adminRpc<Hex>('eth_sendTransaction', [{ from, to, data, gas: '0x7a1200' }]);
+    const hash = await rpc<Hex>('eth_sendTransaction', [{ from, to, data, gas: '0x7a1200' }]);
     await expectSuccess(hash);
     return hash;
   }

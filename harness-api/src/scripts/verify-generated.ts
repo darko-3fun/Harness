@@ -3,7 +3,7 @@
 //
 // Run with no arguments once Agent A publishes the fixture:
 //   npm run verify:generated
-// Chain steps are skipped automatically when the VE is not configured.
+// Chain steps are skipped automatically when no fork is running.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,8 +14,8 @@ import { compileContract } from '../routes/compile.js';
 import { deployContractSource } from '../routes/deploy.js';
 import { runScenario } from '../routes/simulate.js';
 import { env } from '../env.js';
-import { deployerAccount } from '../tenderly.js';
-import type { GeneratedProject, Preset, Scenario } from '../types.js';
+import { assertWritableFork, deployerAccount } from '../chain.js';
+import { PRESET_LIST, type GeneratedProject, type Preset, type Scenario } from '../types.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
@@ -46,8 +46,7 @@ const project = JSON.parse(fs.readFileSync(fixture, 'utf8')) as GeneratedProject
 
 // ---- shape of the shared contract --------------------------------------------------------------
 
-const PRESETS: Preset[] = ['aave-v3-flashloan-receiver', 'aave-v3-erc4626-vault'];
-check('preset declared', PRESETS.includes(project.preset), project.preset);
+check('preset declared', PRESET_LIST.includes(project.preset), project.preset);
 check('contractName present and valid', /^[A-Za-z_][A-Za-z0-9_]*$/.test(project.contractName ?? ''), project.contractName);
 check('contractSource present', typeof project.contractSource === 'string' && project.contractSource.length > 0);
 check('attackTestSource present', typeof project.attackTestSource === 'string' && project.attackTestSource.length > 0);
@@ -92,8 +91,16 @@ check('appliedFindingIds does not overclaim', overclaimed.length === 0, overclai
 
 // ---- chain ---------------------------------------------------------------------------------------
 
-if (!env.TENDERLY_ADMIN_RPC || !env.DEPLOYER_PRIVATE_KEY) {
-  console.log('\nchain not configured — skipping deploy + simulate.');
+// A fork is optional for this script: everything above it is pure computation. If one is
+// not running, say so and skip rather than fail — the generator checks still ran.
+const forkReady = await assertWritableFork().then(
+  () => true,
+  () => false,
+);
+
+if (!forkReady) {
+  console.log(`\nno writable fork at ${env.RPC_URL} — skipping deploy + simulate.`);
+  console.log('  start one with:  npm run fork');
 } else if (!compiled.ok) {
   console.log('\nskipping deploy + simulate because the contract did not compile.');
 } else {
@@ -111,7 +118,7 @@ if (!env.TENDERLY_ADMIN_RPC || !env.DEPLOYER_PRIVATE_KEY) {
       constructorArgs,
     });
     check('generated contract deploys', true, deployed.address);
-    console.log(`    ${deployed.explorerUrl}`);
+    if (deployed.explorerUrl) console.log(`    ${deployed.explorerUrl}`);
 
     const scenario: Scenario = isVault ? 'vault-deposit' : 'flashloan-simple';
     const result = await runScenario({
@@ -126,7 +133,7 @@ if (!env.TENDERLY_ADMIN_RPC || !env.DEPLOYER_PRIVATE_KEY) {
     });
     check(`${scenario} runs against real mainnet Aave`, result.ok, `${result.trace.length} calls`);
     for (const b of result.balanceChanges) console.log(`    ${b.token}: ${b.delta}`);
-    console.log(`    ${result.explorerUrl}`);
+    if (result.explorerUrl) console.log(`    ${result.explorerUrl}`);
   } catch (err) {
     const message = err instanceof Error ? err.message.split('\n')[0] ?? 'error' : String(err);
     check('chain leg of the generated project', false, message.slice(0, 160));

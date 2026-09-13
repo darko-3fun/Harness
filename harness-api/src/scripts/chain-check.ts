@@ -1,5 +1,6 @@
-// B10 dry run: deploy both presets to the Tenderly VE and exercise every scenario against real
-// mainnet Aave. This is the rehearsal harness — run it before the demo, three times.
+// End-to-end dry run: deploy both sample contracts to the fork and exercise every scenario
+// against real mainnet Aave. Start a fork first:
+//   anvil --fork-url <archive RPC> --fork-block-number 25710954
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,7 +9,16 @@ import { parseAbi, type Address } from 'viem';
 import { MAINNET_ADDRESSES_PROVIDER, TOKENS, addressesProviderAbi, poolAbi } from '../aave.js';
 import { deployContractSource } from '../routes/deploy.js';
 import { runScenario } from '../routes/simulate.js';
-import { deployerAccount, publicClient, setErc20Balance, setNativeBalance } from '../tenderly.js';
+import {
+  assertWritableFork,
+  deployerAccount,
+  publicClient,
+  resetFork,
+  restoreState,
+  saveState,
+  setErc20Balance,
+  setNativeBalance,
+} from '../chain.js';
 import type { Scenario, SimulateResult } from '../types.js';
 
 const REWARDS_CONTROLLER = '0x8164Cc65827dcFe994AB23944CBC90e0aa80bFcb' as Address;
@@ -17,11 +27,22 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const samplesDir = path.resolve(here, '../../contracts/samples');
 const read = (f: string) => fs.readFileSync(path.join(samplesDir, f), 'utf8');
 
+await assertWritableFork();
+// Re-fork before anything else, so a second run starts from the same chain as the first
+// rather than inheriting the positions the first one opened.
+await resetFork();
+
 const pub = publicClient();
 const account = deployerAccount();
 const only = process.argv[2] as Scenario | undefined;
 
 const results: { scenario: Scenario; ok: boolean; detail: string }[] = [];
+
+/**
+ * The state every scenario starts from: both contracts deployed, balances seeded, no
+ * positions open. Re-taken after each revert, because reverting consumes a snapshot.
+ */
+let clean: `0x${string}`;
 
 async function reseed(): Promise<void> {
   await setNativeBalance(account.address, 1000n * 10n ** 18n);
@@ -39,6 +60,11 @@ function report(scenario: Scenario, result: SimulateResult): void {
 
 async function run(scenario: Scenario, extra: Partial<Parameters<typeof runScenario>[0]>): Promise<void> {
   if (only && only !== scenario) return;
+  // Back to "deployed, seeded, nothing done". Scenarios share the deployer and the same
+  // Aave reserves, so without this an earlier position decides whether a later borrow is
+  // collateralised — a scenario that passes alone and fails in company.
+  await restoreState(clean);
+  clean = await saveState();
   console.log(`\n─── ${scenario} ─────────────────────────────────────────`);
   await reseed();
   try {
@@ -109,6 +135,8 @@ console.log(`  receiver  ${receiver.address}`);
 
 // ---- scenarios ---------------------------------------------------------------------------------
 
+clean = await saveState();
+
 await run('vault-deposit', { contractAddress: vault.address });
 await run('supply-borrow', {});
 await run('flashloan-simple', { contractAddress: receiver.address });
@@ -118,7 +146,7 @@ await run('leverage-loop', {});
 
 console.log('\n═══ summary ═══');
 for (const r of results) console.log(`  ${r.ok ? 'PASS' : 'FAIL'}  ${r.scenario.padEnd(18)} ${r.detail}`);
-console.log(`\n  vault    ${vault.explorerUrl}`);
-console.log(`  receiver ${receiver.explorerUrl}`);
+console.log(`\n  vault    ${vault.address}${vault.explorerUrl ? `  ${vault.explorerUrl}` : ''}`);
+console.log(`  receiver ${receiver.address}${receiver.explorerUrl ? `  ${receiver.explorerUrl}` : ''}`);
 
 process.exit(results.every((r) => r.ok) ? 0 : 1);
