@@ -29,9 +29,12 @@ import {
  */
 
 /**
- * A free archive endpoint that serves state at FORK_BLOCK. Chosen over the
- * project's own Tenderly Virtual Environment because that one now answers with
- * "rate limit exceeded"; a downloaded project must run without a key.
+ * A free archive endpoint that serves state at FORK_BLOCK.
+ *
+ * A downloaded project must run with no account anywhere, so the default is a
+ * public endpoint rather than a hosted fork behind a key. The whole suite was
+ * verified against this one; a hosted fork is an optimisation, never a
+ * requirement.
  */
 export const DEFAULT_RPC = 'https://eth.drpc.org';
 
@@ -112,17 +115,17 @@ echo "Now:  cp .env.example .env && forge test -vv"
 `;
 }
 
-const ENV_EXAMPLE = `# An archive-capable Ethereum RPC. The default is free and serves the pinned block;
+const ENV_EXAMPLE = `# Everything here works with no account anywhere. The RPC below is free and public;
 # swap in your own endpoint for anything beyond a trial run.
 #
-# IMPORTANT: this must be an ARCHIVE endpoint while TENDERLY_FORK_BLOCK is set. Most
-# free RPCs prune old state and refuse blocks more than ~128 behind head.
+# IMPORTANT: this must be an ARCHIVE endpoint while FORK_BLOCK is set. Most free RPCs
+# prune old state and refuse blocks more than ~128 behind head.
 MAINNET_RPC_URL=${DEFAULT_RPC}
 
 # Pinned so the suites are reproducible: an unpinned fork drifts with mainnet, and a
 # suite that is green today goes red tomorrow for reasons unrelated to the code.
 # Set to 0 to fork at the latest block, which works on any RPC including free ones.
-TENDERLY_FORK_BLOCK=${FORK_BLOCK}
+FORK_BLOCK=${FORK_BLOCK}
 
 # Only needed for script/*.s.sol broadcasts.
 PRIVATE_KEY=

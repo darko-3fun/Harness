@@ -177,50 +177,67 @@ Built and verified: six generators, the audit corpus with mutation tests, both t
 assemblers, the settings advisor against live Aave, Morpho and Compound state, project
 export, server-side compile, and the MCP server.
 
-Not wired: Tenderly deployment and scenario simulation live in `harness-api` and need a
-Virtual Environment of your own; the one this project was built on is rate-limited.
-See below for the three values that turn them on.
+Not wired: deployment and scenario simulation live in `harness-api` and need a forked
+chain to talk to. Everything else needs no account with anyone. See below.
 
 ---
 
-## Wiring up Tenderly (deploy + simulate)
+## Does any of this need an account? No.
 
-Credentials were never committed to this repo, by design — `.env` has been gitignored
-since the first commit, so there is nothing to recover from git history. To turn the
-third pillar on you need three values from your own Tenderly account:
+Nothing in the product requires a key, a login or a paid plan:
 
-1. **Account and project slugs** — they are in the dashboard URL:
-   `dashboard.tenderly.co/<ACCOUNT>/<PROJECT>`.
-2. **An access key** — Account Settings → Access Tokens → Generate Access Token.
+| | Needs an account? |
+|---|---|
+| Generate any preset | no |
+| Audit, including code you paste or edit | no — the engine runs locally, offline |
+| Compile | no — solc runs server-side in the app |
+| Settings advisor reading live Aave / Morpho / Compound state | no — a public RPC |
+| Download a project and run both suites on a mainnet fork | no — a public archive RPC |
 
-Put them in `harness-api/.env` (already scaffolded, gitignored, and carrying a freshly
-generated throwaway deployer key):
+The exported project ships `MAINNET_RPC_URL=https://eth.drpc.org` and `FORK_BLOCK`,
+which is only a block number. A clean download was verified end to end with every
+`TENDERLY_*` variable unset: **17/17 on the Aave vault**, the same numbers as any other
+run. If you see `TENDERLY_FORK_BLOCK` in an older `.env`, it is still read, but the name
+was misleading and is now `FORK_BLOCK`.
+
+### What a hosted fork would add
+
+A Tenderly Virtual Environment was used during the original build and is **optional**.
+It buys two things, neither of which the product depends on:
+
+1. **A public, shareable explorer URL with verified source** for a deployed contract.
+2. Higher rate limits than a free public RPC, which matters only for long invariant runs.
+
+If you want deploy and simulate without any account at all, fork locally with Anvil,
+which ships with Foundry:
 
 ```bash
-TENDERLY_ACCOUNT=your-account-slug
+anvil --fork-url https://eth.drpc.org --fork-block-number 25710954
+```
+
+That serves real mainnet state and the same cheatcodes `harness-api` uses —
+`anvil_setBalance` in place of `tenderly_setBalance`. Verified working. What it cannot
+give you is the shareable explorer link, because it is local.
+
+### If you do have a Tenderly account
+
+Credentials were never committed here — `.env` has been gitignored since the first
+commit, so there is nothing to recover from git history. Put three dashboard values into
+`harness-api/.env` (scaffolded, gitignored, and carrying a freshly generated throwaway
+deployer key):
+
+```bash
+TENDERLY_ACCOUNT=your-account-slug     # from dashboard.tenderly.co/<ACCOUNT>/<PROJECT>
 TENDERLY_PROJECT=your-project-slug
-TENDERLY_ACCESS_KEY=your-access-token
+TENDERLY_ACCESS_KEY=your-access-token  # Account Settings → Access Tokens
 ```
 
-Then let the project build the environment for you:
+Then `npm run vnet:create` builds the environment and writes `TENDERLY_ADMIN_RPC`,
+`TENDERLY_PUBLIC_RPC` and `TENDERLY_EXPLORER_BASE` back into `.env` itself; you never
+paste an RPC URL by hand. The Admin RPC carries the balance cheatcodes, so it stays
+server-side and is never sent to the browser.
 
-```bash
-cd harness-api
-npm install
-npm run vnet:create   # creates a fresh Virtual Environment, writes the RPC URLs back into .env
-npm run vnet:seed     # funds the deployer with real USDC/WETH on the fork
-npm run chain:check   # proves it works end to end
-npm start             # http://localhost:8787/health → "chainConfigured": true
-```
-
-`vnet:create` writes `TENDERLY_ADMIN_RPC`, `TENDERLY_PUBLIC_RPC` and
-`TENDERLY_EXPLORER_BASE` itself; you never paste an RPC URL by hand. The Admin RPC is a
-credential — it carries the `tenderly_setBalance` cheatcodes — so it stays server-side
-and is never printed or sent to the browser.
-
-Creating a **new** environment is also the fix for a rate-limited one: the endpoint this
-project was built against still resolves but answers `429`, which is an account-level
-quota, not a dead URL.
+---
 
 We do not claim the generated code is audit-grade. We claim it starts from the hardened
 pattern rather than the tutorial pattern, and ships the tests that prove the difference.
