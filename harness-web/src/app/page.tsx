@@ -235,16 +235,16 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden p-4">
+    <div className="flex min-h-screen flex-col p-4 lg:h-screen lg:overflow-hidden">
       {/* Category menus + actions, mirroring the wizard's top row. */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 pb-4">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {CATEGORIES.map((c) => (
             <PresetMenu key={c} category={c} selected={opts.preset} onSelect={selectPreset} />
           ))}
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <ThemeToggle />
           <button className="btn" onClick={copyCode}>
             {copied ? 'Copied' : 'Copy to Clipboard'}
@@ -278,9 +278,10 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-4">
+      {/* `relative` anchors the side panel when it overlays the code on a narrow screen. */}
+      <div className="relative flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
         {/* Controls */}
-        <aside className="card w-[336px] shrink-0 overflow-y-auto p-5">
+        <aside className="card w-full shrink-0 overflow-y-auto p-5 lg:w-[336px]">
           <p className="mb-5 text-[14px] leading-snug text-[var(--text-muted)]">
             {PRESET_BLURBS[opts.preset]}
           </p>
@@ -512,7 +513,7 @@ export default function Home() {
         </aside>
 
         {/* Code */}
-        <main className="card flex min-w-0 flex-1 flex-col overflow-hidden">
+        <main className="card flex min-h-[26rem] min-w-0 flex-1 flex-col overflow-hidden lg:min-h-0">
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border-soft)] p-3">
             {(
               [
@@ -697,6 +698,28 @@ function EthField({
   onChange: (wei: string) => void;
 }) {
   const [text, setText] = useState(() => (value ? formatEther(BigInt(value)) : ''));
+
+  /**
+   * Commit once typing settles.
+   *
+   * Selecting the field and typing a new number passes through states like "" and "0",
+   * which are keystrokes rather than intentions. Committing each one sets the option to
+   * zero and flashes the generator's refusal panel mid-word. Waiting for a pause means
+   * the user sees a refusal only when they have actually asked for something impossible.
+   */
+  useEffect(() => {
+    const t = text.trim();
+    if (t === '' || t.endsWith('.')) return;
+    let wei: string;
+    try {
+      wei = parseEther(t).toString();
+    } catch {
+      return;
+    }
+    if (wei === value) return;
+    const id = setTimeout(() => onChange(wei), 400);
+    return () => clearTimeout(id);
+  }, [text, value, onChange]);
   const [seen, setSeen] = useState(value);
   // The option changed from outside (preset switch, URL): resync the box. Adjusting
   // state during render is the sanctioned way to derive state from a prop change.
@@ -714,15 +737,7 @@ function EthField({
     <Field label={label}>
       <input
         value={text}
-        onChange={(e) => {
-          const t = e.target.value;
-          setText(t);
-          try {
-            onChange(parseEther(t || '0').toString());
-          } catch {
-            /* not a number yet */
-          }
-        }}
+        onChange={(e) => setText(e.target.value)}
         spellCheck={false}
         inputMode="decimal"
         className="text-input text-[13px]"

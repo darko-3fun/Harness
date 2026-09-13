@@ -193,6 +193,44 @@ body {
   box-shadow: var(--shadow);
 }
 
+/* The audit / advice / tests panel.
+
+   Beside the code on a wide screen, over it on a narrow one. Three columns need
+   roughly 1280px before the code pane starts losing lines; below that the panel
+   floats above it, so the choice is "read the panel or read the code" rather than
+   "read neither". Closing the panel gives the full width back either way. */
+.side-panel {
+  background: var(--card);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: 380px;
+  flex-shrink: 0;
+}
+/* Between roughly a small laptop and a wide one, float over the code instead of
+   stealing a third of it. */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .side-panel {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    z-index: 20;
+    width: min(380px, calc(100% - 2rem));
+    box-shadow: 0 8px 30px rgb(0 0 0 / 0.28);
+  }
+}
+
+/* Narrower than a laptop the whole page stacks, so the panel is just the next
+   block down at full width. */
+@media (max-width: 1023px) {
+  .side-panel {
+    width: 100%;
+    max-height: 70vh;
+  }
+}
+
 .section-title {
   color: var(--text-faint);
   font-size: 0.875rem;
